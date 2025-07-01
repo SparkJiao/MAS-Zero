@@ -17,51 +17,84 @@ from swe_utils import run_swebench_evaluation, sanity_check
 from utils import extract_xml
 from shared_vars import set_global, get_global
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--valid_size', type=int, default=128)
-parser.add_argument('--test_size', type=int, default=800)
-parser.add_argument('--shuffle_seed', type=int, default=0)
-parser.add_argument('--n_repeats', type=int, default=1)
-parser.add_argument('--multiprocessing', action='store_true', default=True)
-parser.add_argument('--max_workers', type=int, default=48)
-parser.add_argument('--debug', action='store_true', default=True)
-parser.add_argument('--save_dir', type=str, default='results/')
-parser.add_argument('--expr_name', type=str)
-parser.add_argument('--n_generation', type=int, default=10)
-parser.add_argument('--max_round', type=int, default=5)
-parser.add_argument('--max_sc', type=int, default=5)
-parser.add_argument('--debug_max', type=int, default=3)
-parser.add_argument('--option', type=str, default='')
-parser.add_argument('--meta_model',
-                    type=str)
-parser.add_argument('--node_model',
-                    type=str)
-parser.add_argument('--verifier_model',
-                    type=str,
-                    default="o3-mini")
-# gpt-4o
-parser.add_argument('--shorten_context', action='store_true')
-parser.add_argument('--merge_context', action='store_true')
 
-parser.add_argument(
-    "--blocks", type=str, nargs="*", help="Number of examples to use (overrides default)"
-)
-parser.add_argument('--dataset', type=str)
-parser.add_argument(
-    "--given_examples", type=int, nargs="*", help="Number of examples to use (overrides default)"
-)
-parser.add_argument(
-    "--use_oracle_verifier", action='store_true', default=False
-)
-parser.add_argument(
-    "--defer_verifier", action='store_true'
-)
-parser.add_argument(
-    "--no_decompose", action='store_true'
-)
-parser.add_argument(
-    "--no_meta_reward", action='store_true'
-)
+model_sampler_map = {
+    "o3-mini": OChatCompletionSampler(
+        model="o3-mini",
+    ),
+    "gpt-4o_chatgpt": ChatCompletionSampler(
+        model="gpt-4o",
+    ),
+    "qwen-2.5-32b-instr": VllmChatCompletionSampler(
+        model="qwen-2.5-32b-instr",
+    ),
+    "qwen3-30b-a3b": VllmChatCompletionSampler(
+        model="qwen3-30b-a3b",
+    ),
+    "qwq-32b": ToChatCompletionSampler(
+        model="Qwen/Qwen2.5-32B-Instruct",
+    ),
+    "llama-3.3-70b-instr": ToChatCompletionSampler(
+        model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    ),
+    "qwen3-235b": ToChatCompletionSampler(
+        model="Qwen/Qwen3-235B-A22B-fp8-tput",
+    ),
+    "deepseek-v3": ToChatCompletionSampler(
+        model="deepseek-ai/DeepSeek-V3"
+    )
+}
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--valid_size', type=int, default=128)
+    parser.add_argument('--test_size', type=int, default=800)
+    parser.add_argument('--shuffle_seed', type=int, default=0)
+    parser.add_argument('--n_repeats', type=int, default=1)
+    parser.add_argument('--multiprocessing', action='store_true', default=True)
+    parser.add_argument('--max_workers', type=int, default=48)
+    parser.add_argument('--debug', action='store_true', default=True)
+    parser.add_argument('--save_dir', type=str, default='results/')
+    parser.add_argument('--expr_name', type=str)
+    parser.add_argument('--n_generation', type=int, default=10)
+    parser.add_argument('--max_round', type=int, default=5)
+    parser.add_argument('--max_sc', type=int, default=5)
+    parser.add_argument('--debug_max', type=int, default=3)
+    parser.add_argument('--option', type=str, default='')
+    parser.add_argument('--meta_model',
+                        type=str)
+    parser.add_argument('--node_model',
+                        type=str)
+    parser.add_argument('--verifier_model',
+                        type=str,
+                        default="o3-mini")
+    # gpt-4o
+    parser.add_argument('--shorten_context', action='store_true')
+    parser.add_argument('--merge_context', action='store_true')
+
+    parser.add_argument(
+        "--blocks", type=str, nargs="*", help="Number of examples to use (overrides default)"
+    )
+    parser.add_argument('--dataset', type=str)
+    parser.add_argument(
+        "--given_examples", type=int, nargs="*", help="Number of examples to use (overrides default)"
+    )
+    parser.add_argument(
+        "--use_oracle_verifier", action='store_true', default=False
+    )
+    parser.add_argument(
+        "--defer_verifier", action='store_true'
+    )
+    parser.add_argument(
+        "--no_decompose", action='store_true'
+    )
+    parser.add_argument(
+        "--no_meta_reward", action='store_true'
+    )
+    args = parser.parse_args()
+
+    return args
 
 
 class DataScorer:
@@ -188,9 +221,8 @@ class DataScorer:
         return score_oracle_verifier, score_model_verifier, results
 
 
-args = parser.parse_args()
-
-if __name__ == "__main__":
+def main():
+    args = parse_arguments()
 
     blocks = args.blocks
     meta_model = args.meta_model
@@ -209,59 +241,32 @@ if __name__ == "__main__":
     print('technique: ', technique)
     print('node_model: ', node_model)
 
-    model_sampler_map = {
-        "o3-mini": OChatCompletionSampler(
-            model="o3-mini",
-        ),
-        "gpt-4o_chatgpt": ChatCompletionSampler(
-            model="gpt-4o",
-        ),
-        "qwen-2.5-32b-instr": VllmChatCompletionSampler(
-            model="qwen-2.5-32b-instr",
-        ),
-        "qwen3-30b-a3b": VllmChatCompletionSampler(
-            model="qwen3-30b-a3b",
-        ),
-        "qwq-32b": ToChatCompletionSampler(
-            model="Qwen/Qwen2.5-32B-Instruct",
-        ),
-        "llama-3.3-70b-instr": ToChatCompletionSampler(
-            model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        ),
-        "qwen3-235b": ToChatCompletionSampler(
-            model="Qwen/Qwen3-235B-A22B-fp8-tput",
-        ),
-        "deepseek-v3": ToChatCompletionSampler(
-            model="deepseek-ai/DeepSeek-V3"
-        )
-    }
-
     json_model = ['gpt']
     xml_model = ['qwen', 'llama-3.3', 'deepseek']
 
+    extra_info = {}
     if any(kw in node_model for kw in json_model):
-
-        FORMAT_INST = lambda \
-            request_keys: f"""Reply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n"""
-        set_global("global_format_choice", 'json')
+        format_inst_template = ("Reply EXACTLY with the following JSON format.\n{request_keys}\n"
+                                "DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n")
+        extra_info["format_choice"] = "json"
 
     elif any(kw in node_model for kw in xml_model):
-        FORMAT_INST = lambda \
-            request_keys: f"""Reply EXACTLY with the following XML format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n"""
-        set_global("global_format_choice", 'xml')
+        format_inst_template = ("Reply EXACTLY with the following XML format.\n{request_keys}\n"
+                                "DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n")
+        extra_info["global_format_choice"] = 'xml'
 
     else:
         raise NotImplementedError
 
     mode_verifier = model_sampler_map[verifier_model]
 
-    set_global("global_FORMAT_INST", FORMAT_INST)
-    set_global("global_model_sampler_map", model_sampler_map)
-    set_global("global_shorten_context", args.shorten_context)
-    set_global("global_merge_context", args.merge_context)
-    set_global("global_COST_TOTAL", 0.0)
-    set_global("global_no_decompose", args.no_decompose)
-    set_global("global_no_meta_reward", args.no_meta_reward)
+    extra_info["FORMAT_INST"] = format_inst_template
+    extra_info["model_sampler_map"] = model_sampler_map
+    extra_info["shorten_context"] = args.shorten_context
+    extra_info["merge_context"] = args.merge_context
+    extra_info["COST_TOTAL"] = 0.0
+    extra_info["no_decompose"] = args.no_decompose
+    extra_info["no_meta_reward"] = args.no_meta_reward
 
     print('shorten_context: ', args.shorten_context)
     print('merge_context: ', args.merge_context)

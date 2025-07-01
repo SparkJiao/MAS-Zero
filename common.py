@@ -64,7 +64,6 @@ from sampler.vllm_completion_sampler import ChatCompletionSampler as VllmChatCom
 import copy
 from shared_vars import set_global, get_global, add_to_global_cost
 
-
 Message = dict[str, Any]  # keys role, content
 MessageList = list[Message]
 
@@ -78,7 +77,6 @@ model_price_map = {
     },
     # follow aflow: "gpt-4o": {"prompt": 0.005, "completion": 0.015}
     # in https://github.com/geekan/MetaGPT/blob/main/metagpt/utils/token_counter.py
-
 
     "o3-mini": {
         'prompt': 0.55,
@@ -96,8 +94,19 @@ model_price_map = {
         'prompt': 0,
         'completion': 0
     },
+    "deepseek-v3": {
+        "prompt": 0,
+        "completion": 0,
+    },
+    "qwen3-235b": {
+        "prompt": 0,
+        "completion": 0,
+    },
+    "qwen3-30b-a3b": {
+        "prompt": 0,
+        "completion": 0,
+    }
 }
-
 
 
 class SamplerBase:
@@ -143,7 +152,6 @@ class SingleEvalResult:
     convo: MessageList | None = None  # sampled conversation
 
 
-
 HTML_JINJA = """
 <h3>Prompt conversation</h3>
 {% for message in prompt_messages %}
@@ -158,11 +166,10 @@ HTML_JINJA = """
 """
 
 
-
-#TODO: GPT-4o judge is bad and suffer a lot from false postive
+# TODO: GPT-4o judge is bad and suffer a lot from false postive
 
 def merge_context(msg_list_reflect):
-    #TODO: can be incorrect
+    # TODO: can be incorrect
     system_msg = None
     user_parts = []
 
@@ -176,8 +183,9 @@ def merge_context(msg_list_reflect):
 
     # Use the last user message as the end
     final_user_content = user_parts[-1] if user_parts else ""
-    merged_user_content = "\n\n".join(user_parts[:-1]) + "\n\nNow please do the following:\n\n" + final_user_content + "\n\nIMPORTANT: You must NOT copy any reflection, code or thought from the previous assistant message in the history above. You goal is to improve over them to achieve higher fitness score by updating the reflection, thought and code. Your new reflection, thought and code should be significantly different from those in the history so that it can change output of the code.\nDO NOT do trivial modifications like change the variable or sub-task names or paraphrase the same instruction, as these trivial changes cannot change the final output of your code.\nMake sure your code reflect all the improvements mentioned in your reflection and thought and it is COMPLETE." if len(user_parts) > 1 else final_user_content
-
+    merged_user_content = "\n\n".join(user_parts[
+                                      :-1]) + "\n\nNow please do the following:\n\n" + final_user_content + "\n\nIMPORTANT: You must NOT copy any reflection, code or thought from the previous assistant message in the history above. You goal is to improve over them to achieve higher fitness score by updating the reflection, thought and code. Your new reflection, thought and code should be significantly different from those in the history so that it can change output of the code.\nDO NOT do trivial modifications like change the variable or sub-task names or paraphrase the same instruction, as these trivial changes cannot change the final output of your code.\nMake sure your code reflect all the improvements mentioned in your reflection and thought and it is COMPLETE." if len(
+        user_parts) > 1 else final_user_content
 
     return [
         system_msg,
@@ -189,44 +197,40 @@ def shorten_context(msg_list):
     msg_list_reflect = []
 
     assistant_indices = [i for i, msg in enumerate(msg_list) if msg['role'] == 'assistant']
-    print('assistant_indices: ',assistant_indices)
+    print('assistant_indices: ', assistant_indices)
 
     for msg_id, msg in enumerate(msg_list):
 
-        if msg['role'] == 'system': 
+        if msg['role'] == 'system':
             msg_list_reflect.append(msg)
         elif msg['role'] == 'assistant':
-            if msg_id != assistant_indices[-1]: # if not the last one, remove 2 keys and items to save some context length
+            if msg_id != assistant_indices[-1]:  # if not the last one, remove 2 keys and items to save some context length
                 print(f"remove {msg_id}:  {msg['content'].keys()}")
                 # cut the content due to the context length limit
                 msg_list_reflect.append(
                     {**msg,
-                    "content": {k: v for k, v in msg["content"].items() if k not in {"sub_tasks", "agents", "code", "acc", "total_cost"}}
-                    }
-                    )
-            else: # for the last, just appen
+                     "content": {k: v for k, v in msg["content"].items() if k not in {"sub_tasks", "agents", "code", "acc", "total_cost"}}
+                     }
+                )
+            else:  # for the last, just appen
                 msg_list_reflect.append(msg)
         elif msg['role'] == 'user':
             msg_list_reflect.append(msg)
         else:
             raise NotImplementedError
-    
-    print('length of msg_list_reflect: ',len(msg_list_reflect))
+
+    print('length of msg_list_reflect: ', len(msg_list_reflect))
 
     return msg_list_reflect
 
 
-
-
 def check_equality(sampler: SamplerBase, expr1: str, expr2: str, use_oracle_verifier=False, judge_path=None):
-
-
-    if use_oracle_verifier: # directly use oracle
+    if use_oracle_verifier:  # directly use oracle
         prompt = EQUALITY_TEMPLATE % {"expression1": expr1, "expression2": expr2}
         response, _ = sampler([dict(content=prompt, role="user")], response_format='normal')
-        print('response oracle verifier: ',response)
+        print('response oracle verifier: ', response)
 
-    else: # use model verifier 
+    else:  # use model verifier
         raise NotImplementedError
 
     return response.lower().strip() == "yes"
@@ -250,13 +254,13 @@ def get_json_response_from_gpt(
     model_sampler_map = get_global("global_model_sampler_map")
     sampler = model_sampler_map[model]
 
-    debug_count = 0 
+    debug_count = 0
     while True:
         debug_count += 1
         try:
             sampler_return = sampler(msg, tempreture)
 
-            #TODO: we do not want to break here. If it is just excution, it must be runnable by keep retrying
+            # TODO: we do not want to break here. If it is just excution, it must be runnable by keep retrying
             # if sampler_return == "" or debug_count > 5: #bad request
             #     json_dict = "bad_request"
             #     return json_dict
@@ -266,11 +270,16 @@ def get_json_response_from_gpt(
             keys = json_dict.keys()
 
             is_valid_answer = True
-            if 'answer' in keys and len(json_dict['answer'].strip())==0:
+            if 'answer' in keys and len(json_dict['answer'].strip()) == 0:
                 is_valid_answer = False
 
+            # Hacked by Fangkai to run Qwen3-235B
+            if 'thinking' in output_fields and 'think' in keys and 'thinking' in keys:
+                json_dict.pop('think')
+                keys = json_dict.keys()
+
             if set(keys) == set(output_fields) and is_valid_answer:
-            # if set(json_dict.keys()) == {'thinking', 'answer'} or set(json_dict.keys()) == {'feedback', 'correct'}:
+                # if set(json_dict.keys()) == {'thinking', 'answer'} or set(json_dict.keys()) == {'feedback', 'correct'}:
                 break
             else:
                 print(f'require output_fields: {output_fields}, json_dict: {keys}; is_valid_answer: {is_valid_answer}')
@@ -282,9 +291,9 @@ def get_json_response_from_gpt(
     prompt_tokens = usage.prompt_tokens
     completion_tokens = usage.completion_tokens
     cost = (
-    prompt_tokens * model_price_map[model]['prompt']
-    + completion_tokens * model_price_map[model]['completion']
-    ) / 1000
+                   prompt_tokens * model_price_map[model]['prompt']
+                   + completion_tokens * model_price_map[model]['completion']
+           ) / 1000
     add_to_global_cost(cost)
     # print('COST_TOTAL: ',COST_TOTAL)
 
@@ -296,19 +305,19 @@ def get_json_response_from_gpt_reflect(
         msg,
         model
 ):
-        # "thought":  # "name": "Chain-of-Thought", # "code": 
+    # "thought":  # "name": "Chain-of-Thought", # "code":
     # print('model: ',model)
     model_sampler_map = get_global("global_model_sampler_map")
-   
+
     sampler = model_sampler_map[model]
     # print('meta msg: ',msg)
 
-    debug_count = 0 
+    debug_count = 0
     while True:
         debug_count += 1
         try:
             sampler_return = sampler(msg)
-            if sampler_return == "" or debug_count > 5: #bad request
+            if sampler_return == "" or debug_count > 5:  # bad request
                 json_dict = "bad_request"
                 return json_dict
 
@@ -317,7 +326,7 @@ def get_json_response_from_gpt_reflect(
 
             # print('json_dict: ',json_dict)
             keys = json_dict.keys()
-            #TODO: consider constraint the json like above
+            # TODO: consider constraint the json like above
             if 'name' in keys and 'thought' in keys and 'code' in keys and 'def forward(self, taskInfo):' in json_dict['code']:
                 try:
                     compile(json_dict['code'], "<string>", "exec")
@@ -325,28 +334,78 @@ def get_json_response_from_gpt_reflect(
                     print(f"Syntax error: {e}. Rerun")
                     continue
                 break
-            else: #inocrrect
+            else:  # inocrrect
                 if not 'def forward(self, taskInfo):' in json_dict['code']:
                     print(f"code: {json_dict['code']}; reflection: {json_dict['reflection']}")
-                print(f"missing key: {keys}",)
+                print(f"missing key: {keys}", )
         except Exception as e:
             print(f'Reflect Error: {e}; response_text: {response_text}')
 
     prompt_tokens = usage.prompt_tokens
     completion_tokens = usage.completion_tokens
     cost = (
-    prompt_tokens * model_price_map[model]['prompt']
-    + completion_tokens * model_price_map[model]['completion']
-    ) / 1000
+                   prompt_tokens * model_price_map[model]['prompt']
+                   + completion_tokens * model_price_map[model]['completion']
+           ) / 1000
     add_to_global_cost(cost)
-
 
     return json_dict
 
 
+@backoff.on_exception(backoff.expo, openai.RateLimitError)
+def get_json_response_from_gpt_reflect_local(
+        msg,
+        model,
+        extra_info
+):
+    # "thought":  # "name": "Chain-of-Thought", # "code":
+    # print('model: ',model)
+    model_sampler_map = extra_info["global_model_sampler_map"]
+
+    sampler = model_sampler_map[model]
+    # print('meta msg: ',msg)
+
+    debug_count = 0
+    while True:
+        debug_count += 1
+        try:
+            sampler_return = sampler(msg)
+            if sampler_return == "" or debug_count > 5:  # bad request
+                json_dict = "bad_request"
+                return json_dict
+
+            response_text, usage = sampler_return
+            json_dict = json.loads(response_text)
+
+            # print('json_dict: ',json_dict)
+            keys = json_dict.keys()
+            # TODO: consider constraint the json like above
+            if 'name' in keys and 'thought' in keys and 'code' in keys and 'def forward(self, taskInfo):' in json_dict['code']:
+                try:
+                    compile(json_dict['code'], "<string>", "exec")
+                except SyntaxError as e:
+                    print(f"Syntax error: {e}. Rerun")
+                    continue
+                break
+            else:  # inocrrect
+                if not 'def forward(self, taskInfo):' in json_dict['code']:
+                    print(f"code: {json_dict['code']}; reflection: {json_dict['reflection']}")
+                print(f"missing key: {keys}", )
+        except Exception as e:
+            print(f'Reflect Error: {e}; response_text: {response_text}')
+
+    prompt_tokens = usage.prompt_tokens
+    completion_tokens = usage.completion_tokens
+    cost = (
+                   prompt_tokens * model_price_map[model]['prompt']
+                   + completion_tokens * model_price_map[model]['completion']
+           ) / 1000
+    extra_info["COST_TOTAL"] = extra_info["COST_TOTAL"] + cost
+
+    return json_dict
+
 
 def get_init_archive(blocks):
-
     global_format_choice = get_global("global_format_choice")
     if global_format_choice == 'json':
         from blocks.reflexion import Reflexion
@@ -360,26 +419,26 @@ def get_init_archive(blocks):
         'COT_SC': COT_SC,
         'Reflexion': Reflexion,
         'LLM_debate': LLM_debate,
-    }    
-    return [copy.deepcopy(block_map[block]) for block in blocks] # it may be the same architecture, copy to avpod cross modification
+    }
+    return [copy.deepcopy(block_map[block]) for block in blocks]  # it may be the same architecture, copy to avpod cross modification
 
 
 def import_based_on_option(option):
     if option == 'edge':
         from prompts.edge.init_propose import base, EXAMPLE
-        from prompts.edge.reflect_before_eval import  Reflexion_prompt_1, Reflexion_prompt_2
+        from prompts.edge.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
 
     elif option == 'adas':
         from prompts.adas.init_propose import base, EXAMPLE
-        from prompts.adas.reflect_before_eval import  Reflexion_prompt_1, Reflexion_prompt_2
+        from prompts.adas.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
 
     elif option == 'node':
         from prompts.node.init_propose import base, EXAMPLE
-        from prompts.node.reflect_before_eval import  Reflexion_prompt_1, Reflexion_prompt_2
+        from prompts.node.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
 
     elif option == 'cot_sc':
         from prompts.cot_sc.init_propose import base, EXAMPLE
-        from prompts.cot_sc.reflect_before_eval import  Reflexion_prompt_1, Reflexion_prompt_2
+        from prompts.cot_sc.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
 
     elif option == 'plan':
         global_no_decompose = get_global("global_no_decompose")
@@ -396,9 +455,10 @@ def import_based_on_option(option):
     else:
         raise NotImplementedError
 
-    return  base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2 
+    return base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2
 
-def get_prompt(current_archive, option='', task_queue=None): # this is for search method
+
+def get_prompt(current_archive, option='', task_queue=None):  # this is for search method
     archive_str = ",\n".join([json.dumps(sol) for sol in current_archive])
     archive_str = f"[{archive_str}]"
 
@@ -423,6 +483,37 @@ def get_prompt(current_archive, option='', task_queue=None): # this is for searc
     return system_prompt, prompt
 
 
+def get_prompt_local(current_archive, extra_info, option='', task_queue=None):  # this is for search method
+    archive_str = ",\n".join([json.dumps(sol) for sol in current_archive])
+    archive_str = f"[{archive_str}]"
+
+    base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2 = import_based_on_option(option)
+
+    prompt = base.replace("[ARCHIVE]", archive_str)
+    prompt = prompt.replace("[EXAMPLE]", json.dumps(EXAMPLE))
+
+    if 'Below is the question to solve:\n\n[QUESTION]' in prompt:
+        prompt = prompt.replace("[QUESTION]", task_queue[0][2])
+
+    global_format_choice = extra_info["format_choice"]
+
+    if global_format_choice == 'json':
+        system_prompt = ('You are a helpful assistant.\n\n'
+                         'Reply EXACTLY with the following JSON format.\n'
+                         '{"reflection": "Your reflection (if applicable).", "thought": "Your thought.", "name": "Your name.", "code": "Your code."}\n'
+                         'DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!')
+    elif global_format_choice == 'xml':
+        system_prompt = ('You are a helpful assistant.\n\n'
+                         'Reply EXACTLY with the following XML format.\n'
+                         '<reflection> [Your reflection, if applicable] </reflection>\n'
+                         '<thought> [Your thought.] </thought>\n<name> [Your name.] </name>\n'
+                         '<code> [Your code.] </code>\n\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!')
+    else:
+        raise NotImplementedError
+
+    return system_prompt, prompt
+
+
 def get_reflexion_after_eval(option):
     global_format_choice = get_global("global_format_choice")
 
@@ -431,7 +522,7 @@ def get_reflexion_after_eval(option):
         global_no_decompose = get_global("global_no_decompose")
         global_no_meta_reward = get_global("global_no_meta_reward")
 
-        if global_no_meta_reward: # only consider GPT-4o
+        if global_no_meta_reward:  # only consider GPT-4o
             from prompts.plan.reflect_after_eval_no_meta_reward import Reflexion_after_eval_prompt
         elif global_no_decompose:
             from prompts.plan.reflect_after_eval_no_decompose import Reflexion_after_eval_prompt
@@ -446,28 +537,47 @@ def get_reflexion_after_eval(option):
     else:
         raise NotImplementedError
 
-    return Reflexion_after_eval_prompt 
+    return Reflexion_after_eval_prompt
 
 
+def get_reflexion_after_eval_local(option, extra_info):
+    global_format_choice = extra_info["global_format_choice"]
+
+    if option == 'plan':
+
+        global_no_decompose = extra_info["global_no_decompose"]
+        global_no_meta_reward = extra_info["global_no_meta_reward"]
+
+        if global_no_meta_reward:  # only consider GPT-4o
+            from prompts.plan.reflect_after_eval_no_meta_reward import Reflexion_after_eval_prompt
+        elif global_no_decompose:
+            from prompts.plan.reflect_after_eval_no_decompose import Reflexion_after_eval_prompt
+        else:
+            if global_format_choice == 'json':
+                from prompts.plan.reflect_after_eval import Reflexion_after_eval_prompt
+            elif global_format_choice == 'xml':
+                from prompts.plan.reflect_after_eval_xml import Reflexion_after_eval_prompt
+            else:
+                raise NotImplementedError
+
+    else:
+        raise NotImplementedError
+
+    return Reflexion_after_eval_prompt
 
 
 def get_reflexion_prompt(prev_example, option):
-
-    base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2  = import_based_on_option(option)
+    base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2 = import_based_on_option(option)
 
     prev_example_str = "Here is the previous agent you tried:\n" + json.dumps(prev_example) + "\n\n"
     r1 = Reflexion_prompt_1.replace("[EXAMPLE]", prev_example_str) if prev_example else Reflexion_prompt_1.replace("[EXAMPLE]", "")
     return r1, Reflexion_prompt_2
 
 
-
-
-
-
 def aggregate_results(
-    single_eval_results: list[SingleEvalResult],
-    default_stats: tuple[str] = ("mean", "std"),
-    name2stats: dict[str, tuple[str]] | None = None,
+        single_eval_results: list[SingleEvalResult],
+        default_stats: tuple[str] = ("mean", "std"),
+        name2stats: dict[str, tuple[str]] | None = None,
 ) -> EvalResult:
     """
     Aggregate results from multiple evaluations into a single EvalResult.
@@ -533,7 +643,6 @@ def message_to_html(message: Message) -> str:
 
 
 jinja_env.globals["message_to_html"] = message_to_html
-
 
 _report_template = """<!DOCTYPE html>
 <html>
@@ -618,6 +727,7 @@ def make_report_from_example_htmls(htmls: list[str]):
     """
     return jinja_env.from_string(_report_template).render(score=None, metrics={}, htmls=htmls)
 
+
 def normalize_response(response: str) -> str:
     """
     Normalize the response by removing markdown and LaTeX formatting that may prevent a match.
@@ -638,6 +748,7 @@ def normalize_response(response: str) -> str:
         .replace("{", "")
         .replace("\\boxed", "")
     )
+
 
 def normalize_extracted_answer(extracted_answer: str) -> str:
     return (
@@ -665,6 +776,7 @@ def url_to_fileobj(url: str, binary=False) -> Any:
     response.raise_for_status()
     return io.BytesIO(response.content) if binary else io.StringIO(response.text)
 
+
 def _compute_stat(values: list, stat: str):
     if stat == "mean":
         return np.mean(values)
@@ -678,9 +790,7 @@ def _compute_stat(values: list, stat: str):
         raise ValueError(f"Unknown {stat =}")
 
 
-
 ANSWER_PATTERN = r"(?i)Answer\s*:\s*([^\n]+)"
-
 
 EQUALITY_TEMPLATE = r"""
 Look at the following two expressions (answers to a math problem) and judge whether they are equivalent. Only perform trivial simplifications
@@ -741,8 +851,6 @@ Respond with only "Yes" or "No" (without quotes). Do not include a rationale.
     Expression 1: %(expression1)s
     Expression 2: %(expression2)s
 """.strip()
-
-
 
 MCQ_EQUALITY_TEMPLATE = r"""
 Look at the and questions and following two expressions (answers to a multiple-choice problem) and judge whether they are equivalent. Only perform trivial simplifications
@@ -809,7 +917,6 @@ Respond with only "Yes" or "No" (without quotes). Do not include a rationale.
 """.strip()
 
 
-
 def format_multichoice_question(row):
     return QUERY_TEMPLATE_MULTICHOICE.format(**row)
 
@@ -828,9 +935,9 @@ def _compute_stat(values: list, stat: str):
 
 
 def aggregate_results(
-    single_eval_results: list[SingleEvalResult],
-    default_stats: tuple[str] = ("mean", "std"),
-    name2stats: dict[str, tuple[str]] | None = None,
+        single_eval_results: list[SingleEvalResult],
+        default_stats: tuple[str] = ("mean", "std"),
+        name2stats: dict[str, tuple[str]] | None = None,
 ) -> EvalResult:
     """
     Aggregate results from multiple evaluations into a single EvalResult.
@@ -896,7 +1003,6 @@ def message_to_html(message: Message) -> str:
 
 
 jinja_env.globals["message_to_html"] = message_to_html
-
 
 _report_template = """<!DOCTYPE html>
 <html>
@@ -981,6 +1087,7 @@ def make_report_from_example_htmls(htmls: list[str]):
     """
     return jinja_env.from_string(_report_template).render(score=None, metrics={}, htmls=htmls)
 
+
 def normalize_response(response: str) -> str:
     """
     Normalize the response by removing markdown and LaTeX formatting that may prevent a match.
@@ -1001,6 +1108,7 @@ def normalize_response(response: str) -> str:
         .replace("{", "")
         .replace("\\boxed", "")
     )
+
 
 def normalize_extracted_answer(extracted_answer: str) -> str:
     return (

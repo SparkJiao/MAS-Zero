@@ -16,52 +16,9 @@ from prompts.swe.patch_oracle import AGENTLESS_REPAIR
 from swe_utils import run_swebench_evaluation, sanity_check
 from utils import extract_xml
 from shared_vars import set_global, get_global
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--valid_size', type=int, default=128)
-parser.add_argument('--test_size', type=int, default=800)
-parser.add_argument('--shuffle_seed', type=int, default=0)
-parser.add_argument('--n_repeats', type=int, default=1)
-parser.add_argument('--multiprocessing', action='store_true', default=True)
-parser.add_argument('--max_workers', type=int, default=48)
-parser.add_argument('--debug', action='store_true', default=True)
-parser.add_argument('--save_dir', type=str, default='results/')
-parser.add_argument('--expr_name', type=str)
-parser.add_argument('--n_generation', type=int, default=10)
-parser.add_argument('--max_round', type=int, default=5)
-parser.add_argument('--max_sc', type=int, default=5)
-parser.add_argument('--debug_max', type=int, default=3)
-parser.add_argument('--option', type=str, default='')
-parser.add_argument('--meta_model',
-                    type=str)
-parser.add_argument('--node_model',
-                    type=str)
-parser.add_argument('--verifier_model',
-                    type=str,
-                    default="o3-mini")
-# gpt-4o
-parser.add_argument('--shorten_context', action='store_true')
-parser.add_argument('--merge_context', action='store_true')
-
-parser.add_argument(
-    "--blocks", type=str, nargs="*", help="Number of examples to use (overrides default)"
-)
-parser.add_argument('--dataset', type=str)
-parser.add_argument(
-    "--given_examples", type=int, nargs="*", help="Number of examples to use (overrides default)"
-)
-parser.add_argument(
-    "--use_oracle_verifier", action='store_true', default=False
-)
-parser.add_argument(
-    "--defer_verifier", action='store_true'
-)
-parser.add_argument(
-    "--no_decompose", action='store_true'
-)
-parser.add_argument(
-    "--no_meta_reward", action='store_true'
-)
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
+import copy
 
 
 class DataScorer:
@@ -188,9 +145,8 @@ class DataScorer:
         return score_oracle_verifier, score_model_verifier, results
 
 
-args = parser.parse_args()
-
-if __name__ == "__main__":
+def task(args, task_id, example):
+    examples = [example]
 
     blocks = args.blocks
     meta_model = args.meta_model
@@ -242,12 +198,12 @@ if __name__ == "__main__":
     if any(kw in node_model for kw in json_model):
 
         FORMAT_INST = lambda \
-            request_keys: f"""Reply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n"""
+                request_keys: f"""Reply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n"""
         set_global("global_format_choice", 'json')
 
     elif any(kw in node_model for kw in xml_model):
         FORMAT_INST = lambda \
-            request_keys: f"""Reply EXACTLY with the following XML format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n"""
+                request_keys: f"""Reply EXACTLY with the following XML format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n"""
         set_global("global_format_choice", 'xml')
 
     else:
@@ -344,17 +300,20 @@ if __name__ == "__main__":
 
             debate_role = ['Math Professor', 'Grade School Teacher']
 
-            dataset = load_dataset("simplescaling/aime24_nofigures")
-            df = pd.DataFrame(dataset['train'])
-            examples = [row.to_dict() for _, row in df.iterrows()]
+            # dataset = load_dataset("simplescaling/aime24_nofigures")
+            # df = pd.DataFrame(dataset['train'])
+            # examples = [row.to_dict() for _, row in df.iterrows()][task_id]
+            # examples = [examples]
 
             for example_id, example in enumerate(examples):
-                instance_id = example_id
+                # instance_id = example_id
+                instance_id = task_id
 
                 if args.given_examples:
-                    if example_id not in args.given_examples: continue
+                    if instance_id not in args.given_examples:
+                        continue
 
-                args.expr_name = f'question/meta_agent/{args.dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
+                args.expr_name = f'question/meta_agent/{args.dataset}/{instance_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
                 print('args.expr_name: ', args.expr_name)
 
                 questions = [example['problem']]
@@ -375,7 +334,7 @@ if __name__ == "__main__":
                 set_global("global_answers", answers)
                 set_global("global_questions", questions)
                 set_global("global_use_oracle_verifier", use_oracle_verifier)
-                set_global("global_example_id", example_id)
+                set_global("global_example_id", instance_id)
                 set_global("global_response_dict", [])
                 set_global("global_dataset", args.dataset)
                 set_global("global_instance_id", instance_id)
@@ -441,3 +400,82 @@ if __name__ == "__main__":
 
         else:
             raise NotImplementedError
+
+        print(f"Task id {task_id} Finished.")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--valid_size', type=int, default=128)
+    parser.add_argument('--test_size', type=int, default=800)
+    parser.add_argument('--shuffle_seed', type=int, default=0)
+    parser.add_argument('--n_repeats', type=int, default=1)
+    parser.add_argument('--multiprocessing', action='store_true', default=True)
+    parser.add_argument('--max_workers', type=int, default=48)
+    parser.add_argument('--debug', action='store_true', default=True)
+    parser.add_argument('--save_dir', type=str, default='results/')
+    parser.add_argument('--expr_name', type=str)
+    parser.add_argument('--n_generation', type=int, default=10)
+    parser.add_argument('--max_round', type=int, default=5)
+    parser.add_argument('--max_sc', type=int, default=5)
+    parser.add_argument('--debug_max', type=int, default=3)
+    parser.add_argument('--option', type=str, default='')
+    parser.add_argument('--meta_model',
+                        type=str)
+    parser.add_argument('--node_model',
+                        type=str)
+    parser.add_argument('--verifier_model',
+                        type=str,
+                        default="o3-mini")
+    # gpt-4o
+    parser.add_argument('--shorten_context', action='store_true')
+    parser.add_argument('--merge_context', action='store_true')
+
+    parser.add_argument(
+        "--blocks", type=str, nargs="*", help="Number of examples to use (overrides default)"
+    )
+    parser.add_argument('--dataset', type=str)
+    parser.add_argument(
+        "--given_examples", type=int, nargs="*", help="Number of examples to use (overrides default)"
+    )
+    parser.add_argument(
+        "--use_oracle_verifier", action='store_true', default=False
+    )
+    parser.add_argument(
+        "--defer_verifier", action='store_true'
+    )
+    parser.add_argument(
+        "--no_decompose", action='store_true'
+    )
+    parser.add_argument(
+        "--no_meta_reward", action='store_true'
+    )
+
+    args = parser.parse_args()
+
+    max_workers = 4
+
+    if 'swe_bench' in args.dataset:
+        # Load SWE-bench dataset
+        examples = load_dataset("princeton-nlp/SWE-bench_Lite_oracle", split="test")
+    elif 'aime24' in args.dataset:
+        dataset = load_dataset("simplescaling/aime24_nofigures")
+        df = pd.DataFrame(dataset['train'])
+        examples = [row.to_dict() for _, row in df.iterrows()]
+    elif 'gpqa_diamond' in args.dataset:
+        # set seed 0 for valid set
+        questions = load_questions('dataset/gpqa_diamond.csv', seed=0)
+        answers = [question.correct_index for question in questions]
+
+        examples = [{'problem': questions[i], 'answer': answers[i]} for i in range(len(questions))]
+    else:
+        raise ValueError
+
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futs = [pool.submit(task, copy.deepcopy(args), ex_id, example) for ex_id, example in enumerate(examples)]  # 每进程一份独立 args
+        for f in tqdm(as_completed(futs), total=len(examples)):
+            pass
+
+
+if __name__ == '__main__':
+    main()

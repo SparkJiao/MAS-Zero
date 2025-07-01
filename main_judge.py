@@ -206,12 +206,18 @@ if __name__ == "__main__":
         "qwen-2.5-32b-instr": VllmChatCompletionSampler(
             model="qwen-2.5-32b-instr",
         ),
+        "qwen3-30b-a3b": VllmChatCompletionSampler(
+            model="qwen3-30b-a3b",
+        ),
         "qwq-32b": ToChatCompletionSampler(
             model="Qwen/Qwen2.5-32B-Instruct",
         ),
         "llama-3.3-70b-instr": ToChatCompletionSampler(
             model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
         ),
+        "deepseek-v3": ToChatCompletionSampler(
+            model="deepseek-ai/DeepSeek-V3"
+        )
     }
 
 

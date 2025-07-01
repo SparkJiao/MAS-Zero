@@ -1,19 +1,20 @@
+import aiohttp
+import asyncio
 import base64
-import time
-from typing import Any
-
-import openai
-from openai import OpenAI
-
-from dataclasses import dataclass, field
-from typing import Any
-from together import Together
-from utils import extract_xml
-import re
 import json
-from collections import OrderedDict
+import openai
 import os
+import re
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from openai import OpenAI
+from together import Together
+from typing import Any
+from typing import Any
+from typing import Union, Optional, List, Dict
 
+from utils import extract_xml
 
 Message = dict[str, Any]  # keys role, content
 MessageList = list[Message]
@@ -61,13 +62,12 @@ class Eval:
     def __call__(self, sampler: SamplerBase) -> EvalResult:
         raise NotImplementedError
 
+
 OPENAI_SYSTEM_MESSAGE_API = "You are a helpful assistant."
 OPENAI_SYSTEM_MESSAGE_CHATGPT = (
-    "You are ChatGPT, a large language model trained by OpenAI, based on the GPT-4 architecture."
-    + "\nKnowledge cutoff: 2023-12\nCurrent date: 2024-04-01"
+        "You are ChatGPT, a large language model trained by OpenAI, based on the GPT-4 architecture."
+        + "\nKnowledge cutoff: 2023-12\nCurrent date: 2024-04-01"
 )
-
-
 
 
 class ChatCompletionSampler(SamplerBase):
@@ -76,39 +76,32 @@ class ChatCompletionSampler(SamplerBase):
     """
 
     def __init__(
-        self,
-        system_message: str | None = None,
-        temperature: float = 0.5,
-        model: str | None = None,
-    ):        
-    
-        try:
-            model_api_map = {
-                'qwen-2.5-32b-instr': '8082'
-            }
-            self.api_key_name = "OPENAI_API_KEY"
-            self.system_message = system_message
-            self.temperature = temperature
-            openai_api_key = "EMPTY"
+            self,
+            system_message: str | None = None,
+            temperature: float = 0.5,
+            model: str | None = None,
+            max_tokens: int = 4096,
+    ):
 
-            base_port = os.getenv("BASE_PORT")
-            if base_port:
-                openai_api_base = f"http://localhost:{base_port}/v1"
-            else:
-                openai_api_base = f"http://localhost:{model_api_map[model]}/v1"
+        model_api_map = {
+            'qwen-2.5-32b-instr': '8082',
+            'qwen3-30b-a3b': '8000',
+        }
+        self.api_key_name = "OPENAI_API_KEY"
+        self.system_message = system_message
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        openai_api_key = "EMPTY"
 
-            self.client = OpenAI(
-                # defaults to os.environ.get("OPENAI_API_KEY")
-                api_key=openai_api_key,
-                base_url=openai_api_base,
-            )
-            models = self.client.models.list()
-            self.model = models.data[0].id     
+        base_port = os.getenv("BASE_PORT")
+        if base_port:
+            url_base = f"http://localhost:{base_port}/v1/chat/completions"
+        else:
+            url_base = f"http://localhost:{model_api_map[model]}/v1/chat/completions"
+        self.url_base = url_base
 
-        except Exception as e:
-            print(f'warning VLLM: {e}')
-            
-        
+        self.model = model
+
     def _handle_text(self, text: str):
         return {"type": "text", "text": text}
 
@@ -119,8 +112,7 @@ class ChatCompletionSampler(SamplerBase):
         output_dict = OrderedDict()  # <-- keep insertion order
         tag_names = re.findall(r"</?(\w+)>", ori_answer)
         ordered_unique_tags = list(OrderedDict.fromkeys(tag_names))
-        print('tag_names: ',tag_names)
-
+        print('tag_names: ', tag_names)
 
         for tag in ordered_unique_tags:
             if all(t not in tag for t in ['A', 'B', 'C', 'D', 'sub', 'S_y', 'TOO_HARD', 'command', 'new', 'data', 'comment']):
@@ -136,15 +128,27 @@ class ChatCompletionSampler(SamplerBase):
         while True:
             try:
                 for message_id, message in enumerate(message_list):
-                    if type(message['content']) != str:
+                    if not isinstance(message['content'], str):
                         message_list[message_id]['content'] = str(message['content'])
 
-                # print('message_list: ',message_list)
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=message_list,
-                    temperature= temperature if temperature is not None else self.temperature,              
-                    )
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer None"
+                }
+                payload = {
+                    "model": self.model,
+                    "messages": message_list,
+                    "max_tokens": self.max_tokens,
+                    "temperature": temperature
+                }
+
+                # 发送同步请求
+                response = requests.post(api_base, headers=headers, json=payload)
+
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    response.raise_for_status()
                 # print('response: ',response)
                 ori_answer = response.choices[0].message.content
                 # print('ori_answer: ',ori_answer)
@@ -152,12 +156,10 @@ class ChatCompletionSampler(SamplerBase):
                 json_string = self.xml_to_json(ori_answer)
 
                 return json_string, response.usage
-            # NOTE: BadRequestError is triggered once for MMMU, please uncomment if you are reruning MMMU
-            except openai.BadRequestError as e:
-                print("Bad Request Error", e)
-                return ""
             except Exception as e:
-                exception_backoff = 2**trial  # expontial back off
+                import traceback
+                traceback.print_exc()
+                exception_backoff = 2 ** trial  # expontial back off
                 print(
                     f"VLLM: Rate limit exception so wait and retry {trial} after {exception_backoff} sec",
                     e,
@@ -165,3 +167,70 @@ class ChatCompletionSampler(SamplerBase):
                 time.sleep(exception_backoff)
                 trial += 1
             # unknown error shall throw exception
+
+
+class AsyncChatCompletionSampler(ChatCompletionSampler):
+    async def __call__(self, message_list: MessageList, temperature=None, response_format=None) -> str:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer None"
+        }
+
+        if self.system_message:
+            message_list = [self._pack_message("system", self.system_message)] + message_list
+        trial = 0
+        while True:
+            try:
+                for message_id, message in enumerate(message_list):
+                    if not isinstance(message['content'], str):
+                        message_list[message_id]['content'] = str(message['content'])
+
+                payload = {
+                    "model": self.model,
+                    "messages": message_list,
+                    "max_tokens": self.max_tokens,
+                    "temperature": temperature
+                }
+
+                # 异步请求
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(self.url_base, headers=headers, json=payload) as response:
+                        if response.status == 200:
+                            return await response.json()
+                        else:
+                            error_text = await response.text()
+                            raise aiohttp.ClientError(
+                                f"Request failed: HTTP {response.status}, {error_text}"
+                            )
+
+                # print('response: ',response)
+                ori_answer = response.choices[0].message.content
+                # print('ori_answer: ',ori_answer)
+
+                json_string = self.xml_to_json(ori_answer)
+                # json_string = ori_answer
+
+                return json_string, response.usage
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                exception_backoff = 2 ** trial  # exponential back off
+                print(
+                    f"VLLM: Rate limit exception so wait and retry {trial} after {exception_backoff} sec",
+                    e,
+                )
+                time.sleep(exception_backoff)
+                trial += 1
+            # unknown error shall throw exception
+
+
+if __name__ == '__main__':
+    client = AsyncChatCompletionSampler(model="qwen3-30b-a3b")
+
+    history = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is the capital of France?"},
+    ]
+
+    results = asyncio.run(client(history))
+    print(results)
