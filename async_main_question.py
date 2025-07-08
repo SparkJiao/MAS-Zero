@@ -1,49 +1,16 @@
 import argparse
-from datasets import load_dataset
+import asyncio
+import copy
+
 import pandas as pd
-from common import HTML_JINJA, SingleEvalResult
-import search
-import re
-import common
-from common import ANSWER_PATTERN, check_equality
-from sampler.chat_completion_sampler import ChatCompletionSampler
-from sampler.o_chat_completion_sampler import OChatCompletionSampler
-from sampler.together_completion_sampler import ChatCompletionSampler as ToChatCompletionSampler
-from sampler.vllm_completion_sampler import ChatCompletionSampler as VllmChatCompletionSampler
-import json
-from utils import load_questions
+from datasets import load_dataset
+from tqdm.asyncio import tqdm_asyncio
+
+import async_search as search
 from prompts.swe.patch_oracle import AGENTLESS_REPAIR
-from swe_utils import run_swebench_evaluation, sanity_check
+from sampler import init_model
 from utils import extract_xml
-from shared_vars import set_global, get_global
-
-
-model_sampler_map = {
-    "o3-mini": OChatCompletionSampler(
-        model="o3-mini",
-    ),
-    "gpt-4o_chatgpt": ChatCompletionSampler(
-        model="gpt-4o",
-    ),
-    "qwen-2.5-32b-instr": VllmChatCompletionSampler(
-        model="qwen-2.5-32b-instr",
-    ),
-    "qwen3-30b-a3b": VllmChatCompletionSampler(
-        model="qwen3-30b-a3b",
-    ),
-    "qwq-32b": ToChatCompletionSampler(
-        model="Qwen/Qwen2.5-32B-Instruct",
-    ),
-    "llama-3.3-70b-instr": ToChatCompletionSampler(
-        model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    ),
-    "qwen3-235b": ToChatCompletionSampler(
-        model="Qwen/Qwen3-235B-A22B-fp8-tput",
-    ),
-    "deepseek-v3": ToChatCompletionSampler(
-        model="deepseek-ai/DeepSeek-V3"
-    )
-}
+from utils import load_questions
 
 
 def parse_arguments():
@@ -97,133 +64,31 @@ def parse_arguments():
     return args
 
 
-class DataScorer:
+async def run_aime_search(example, example_id, meta_model, node_model, verifier_model, n, dataset, extra_info,
+                          blocks, n_generation, save_dir, option, defer_verifier, debug_max):
+    expr_name = f'question/meta_agent/{dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
+    print('args.expr_name: ', expr_name)
 
-    def __init__(self, dataset, technique):
-        self.dataset = dataset
-        self.technique = technique
-        self.equality_checker = ChatCompletionSampler(model="gpt-4-turbo-preview")
-        self.LETTER_TO_INDEX = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+    questions = [example['problem']]
+    answers = [example['answer']]
 
-    def run_score(self, answer, extracted_answer, use_oracle_verifier, judge_path, instance_id, n, code_snippet):
+    task_queue = []
+    for q in questions:
+        taskInfo = ('task', 'User', q, None, None, None, -1)
+        task_queue.append(taskInfo)
 
-        if 'swe_bench' in self.dataset:
-            score, percentage, passed_tests, total_tests = run_swebench_evaluation(judge_path, instance_id, extracted_answer, self.technique, n, code_snippet)
+    extra_info["answers"] = answers
+    extra_info["questions"] = questions
+    extra_info["example_id"] = example_id
+    extra_info["instance_id"] = example_id
+    extra_info["response_dict"] = []
 
-            with open(judge_path, 'a+') as judge_file:
-                judge_file.write(
-                    f'{instance_id} → {passed_tests} passed test | {total_tests} total_tests | {passed_tests}/{total_tests} passed → {percentage:.1f}% | Score: {score}\n')
-
-            return score
-
-        elif 'aime24' in self.dataset:
-            return float(check_equality(self.equality_checker, answer, extracted_answer, use_oracle_verifier=True, judge_path=judge_path))
-        elif 'gpqa_diamond' in self.dataset:
-
-            res = extracted_answer
-            is_early_stop = False
-            try:
-                if isinstance(res, str) and res in self.LETTER_TO_INDEX:
-                    predicted_idx = self.LETTER_TO_INDEX[res]
-                elif 'A)' in res:
-                    predicted_idx = 0
-                elif 'B)' in res:
-                    predicted_idx = 1
-                elif 'C)' in res:
-                    predicted_idx = 2
-                elif 'D)' in res:
-                    predicted_idx = 3
-                elif isinstance(res, list):
-                    try_res = res[1]
-                    predicted_idx = self.LETTER_TO_INDEX[try_res.content]
-                elif res.content in self.LETTER_TO_INDEX:
-                    predicted_idx = self.LETTER_TO_INDEX[res.content]
-                elif 'A)' in res.content:
-                    predicted_idx = 0
-                elif 'B)' in res.content:
-                    predicted_idx = 1
-                elif 'C)' in res.content:
-                    predicted_idx = 2
-                elif 'D)' in res.content:
-                    predicted_idx = 3
-                else:
-                    print(f"error in q {q_idx}")
-                    score = 0
-                    is_early_stop = True
-            except Exception as e:
-                score = 0
-                is_early_stop = True
-
-            if not is_early_stop:  # if cannot find predicted_idx, then done
-                if predicted_idx == answer:
-                    score = 1
-                else:
-                    score = 0
-
-            print(f'extracted_answer: {extracted_answer}; answer: {answer}; score: {score}')
-
-            return score
-
-        else:
-            raise NotImplementedError
-
-    def score(self, example_id, n, prompt_message, question, response_text, answer, sub_tasks_text, use_oracle_verifier, judge_path, response_path,
-              response_dict, instance_id, code_snippet):
-
-        if 'swe_bench' in self.dataset:
-            extracted_answer = response_text.split('\n\nAnswer:', 1)[-1].strip()
-            if '<patch>' in extracted_answer:
-                extracted_answer = extract_xml(extracted_answer, 'patch').strip()
-        else:
-            match = re.search(ANSWER_PATTERN, response_text)
-            extracted_answer = match.group(1) if match else None
-            extracted_answer = extracted_answer.strip()
-
-        print('extracted_answer: ', extracted_answer)
-
-        with open(judge_path, 'a+') as judge_file:
-            judge_file.write(f'Question: {question}\nproposed answer: {response_text}\nExtracted answer: {extracted_answer}\nCorrect answer: {answer}\n')
-
-        with open(response_path, 'w') as json_file:
-            response_dict.append({
-                'example_id': example_id,
-                'problem': question,
-                'correct_answer': answer,
-                'n': n,
-                'response': response_text,
-                'sub_tasks_text': sub_tasks_text})
-
-            json.dump(response_dict, json_file, indent=4)
-
-        if use_oracle_verifier:
-            score_oracle_verifier = self.run_score(answer, extracted_answer, use_oracle_verifier=True, judge_path=judge_path, instance_id=instance_id, n=n,
-                                                   code_snippet=code_snippet)
-            score = score_oracle_verifier
-            score_model_verifier = None
-        else:
-            if sub_tasks_text is None:
-                score_model_verifier = self.run_score(mode_verifier, question, response_text, use_oracle_verifier=False, judge_path=judge_path,
-                                                      instance_id=instance_id, n=n, code_snippet=code_snippet)
-            else:
-                score_model_verifier = self.run_score(mode_verifier, question, sub_tasks_text, use_oracle_verifier=False, judge_path=judge_path,
-                                                      instance_id=instance_id, n=n, code_snippet=code_snippet)
-            score = score_model_verifier
-
-        html = common.jinja_env.from_string(HTML_JINJA).render(
-            prompt_messages=prompt_message,
-            next_message=dict(content=response_text, role="assistant"),
-            score=score,
-            correct_answer=answer,
-            extracted_answer=extracted_answer,
-        )
-        convo = prompt_message + [dict(content=response_text, role="assistant")]
-        results = SingleEvalResult(html=html, score=score, convo=convo)
-        return score_oracle_verifier, score_model_verifier, results
+    # search
+    await search.search(extra_info, task_queue, meta_model, blocks, verifier_model, n_generation,
+                        save_dir, expr_name, option, dataset, defer_verifier, debug_max)
 
 
-def main():
-    args = parse_arguments()
-
+async def main(args):
     blocks = args.blocks
     meta_model = args.meta_model
     node_model = args.node_model
@@ -232,13 +97,12 @@ def main():
     max_round = args.max_round
     max_sc = args.max_sc
 
-    SEARCHING_MODE = True
-
-    technique = args.dataset.split('/')[0]
-    data_scorer = DataScorer(args.dataset, technique)
+    # SEARCHING_MODE = True
+    # technique = args.dataset.split('/')[0]
+    # data_scorer = DataScorer(args.dataset, technique)
 
     print('verifier_model: ', verifier_model)
-    print('technique: ', technique)
+    # print('technique: ', technique)
     print('node_model: ', node_model)
 
     json_model = ['gpt']
@@ -253,15 +117,16 @@ def main():
     elif any(kw in node_model for kw in xml_model):
         format_inst_template = ("Reply EXACTLY with the following XML format.\n{request_keys}\n"
                                 "DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n")
-        extra_info["global_format_choice"] = 'xml'
+        extra_info["format_choice"] = 'xml'
 
     else:
         raise NotImplementedError
 
-    mode_verifier = model_sampler_map[verifier_model]
+    init_model(verifier_model)
+    init_model(node_model)
+    init_model(meta_model)
 
     extra_info["FORMAT_INST"] = format_inst_template
-    extra_info["model_sampler_map"] = model_sampler_map
     extra_info["shorten_context"] = args.shorten_context
     extra_info["merge_context"] = args.merge_context
     extra_info["COST_TOTAL"] = 0.0
@@ -283,7 +148,9 @@ def main():
             debate_role = ['Computer Science Professor', 'Software Engineer']
 
             # output_description = "Return ONLY an integer. DO NOT return anything other than the integer answer."
-            output_description = "If the question is asked for a patch to fix an issue, Return ONLY the solution and DO NOT return anything other than the patch; If the question is asked for more than a patch, Return what the question asked and make sure the answer is complete."
+            output_description = (
+                "If the question is asked for a patch to fix an issue, Return ONLY the solution and DO NOT return anything other than the patch;"
+                " If the question is asked for more than a patch, Return what the question asked and make sure the answer is complete.")
 
             # Load SWE-bench dataset
             examples = load_dataset("princeton-nlp/SWE-bench_Lite_oracle", split="test")
@@ -301,7 +168,7 @@ def main():
                 instance_id = example['instance_id']
                 example_text = example['text']
 
-                if get_global("global_format_choice") == 'xml':  # conflict with xml TODO: ADAS and OURS may also need to change
+                if extra_info["format_choice"] == 'xml':  # conflict with xml TODO: ADAS and OURS may also need to change
                     example_text = example_text.replace('<patch>', '<answer>').replace('</patch>', '</answer>')
                     example_text = example_text.replace('Please respond with a single patch file in the following format.',
                                                         'If asked for <answer> field, the <answer> field should be a single patch file in the following format')
@@ -322,30 +189,32 @@ def main():
                     taskInfo = ('task', 'User', q, None, None, None, -1)
                     task_queue.append(taskInfo)
 
-                set_global("global_output_description", output_description)
-                set_global("global_score_compute", data_scorer.score)
-                set_global("global_max_round", max_round)
-                set_global("global_max_sc", max_sc)
-                set_global("global_debate_role", debate_role)
-                set_global("global_cot_instruction", cot_instruction)
-                set_global("global_node_model", node_model)
-                set_global("global_answers", answers)
-                set_global("global_questions", questions)
-                set_global("global_use_oracle_verifier", use_oracle_verifier)
-                set_global("global_example_id", example_id)
-                set_global("global_response_dict", [])
-                set_global("global_dataset", args.dataset)
-                set_global("global_instance_id", instance_id)
-                set_global("global_code_snippet", code_snippet)
+                extra_info["output_description"] = output_description
+                extra_info["score_compute"] = data_scorer.score
+                extra_info["max_round"] = max_round
+                extra_info["max_sc"] = max_sc
+                extra_info["debate_role"] = debate_role
+                extra_info["cot_instruction"] = cot_instruction
+                extra_info["node_model"] = node_model
+                extra_info["answers"] = answers
+                extra_info["questions"] = questions
+                extra_info["use_oracle_verifier"] = use_oracle_verifier
+                extra_info["example_id"] = example_id
+                extra_info["response_dict"] = []
+                extra_info["dataset"] = args.dataset
+                extra_info["instance_id"] = instance_id
+                extra_info["code_snippet"] = code_snippet
 
                 # search
-                search.search(args, task_queue, meta_model, blocks, verifier_model)
+                await search.search(args, extra_info, task_queue, meta_model, blocks, verifier_model)
 
         elif 'aime24' in args.dataset:
 
             cot_instruction = "Please think step by step and then solve the task."
             # output_description = "Return ONLY an integer. DO NOT return anything other than the integer answer."
-            output_description = "If the question is asked for a numeric result, Return ONLY an integer and DO NOT return anything other than the integer answer; If the question is asked for more than numeric results, Return what the question asked and make sure the answer is complete."
+            output_description = (
+                "If the question is asked for a numeric result, Return ONLY an integer and DO NOT return anything other than the integer answer; "
+                "If the question is asked for more than numeric results, Return what the question asked and make sure the answer is complete.")
 
             debate_role = ['Math Professor', 'Grade School Teacher']
 
@@ -353,47 +222,47 @@ def main():
             df = pd.DataFrame(dataset['train'])
             examples = [row.to_dict() for _, row in df.iterrows()]
 
+            extra_info["node_model"] = node_model
+            extra_info["verifier_model"] = verifier_model
+            extra_info["output_description"] = output_description
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["dataset"] = args.dataset
+            extra_info["code_snippet"] = code_snippet
+
+            # 控制并发数量的信号量，最多同时运行5个任务
+            semaphore = asyncio.Semaphore(32)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_aime_search(*a, **kw)
+
+            tasks = []
             for example_id, example in enumerate(examples):
-                instance_id = example_id
 
                 if args.given_examples:
-                    if example_id not in args.given_examples: continue
+                    if example_id not in args.given_examples:
+                        continue
 
-                args.expr_name = f'question/meta_agent/{args.dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
-                print('args.expr_name: ', args.expr_name)
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
 
-                questions = [example['problem']]
-                answers = [example['answer']]
+            await tqdm_asyncio.gather(*tasks)
 
-                task_queue = []
-                for q in questions:
-                    taskInfo = ('task', 'User', q, None, None, None, -1)
-                    task_queue.append(taskInfo)
-
-                set_global("global_output_description", output_description)
-                set_global("global_score_compute", data_scorer.score)
-                set_global("global_max_round", max_round)
-                set_global("global_max_sc", max_sc)
-                set_global("global_debate_role", debate_role)
-                set_global("global_cot_instruction", cot_instruction)
-                set_global("global_node_model", node_model)
-                set_global("global_answers", answers)
-                set_global("global_questions", questions)
-                set_global("global_use_oracle_verifier", use_oracle_verifier)
-                set_global("global_example_id", example_id)
-                set_global("global_response_dict", [])
-                set_global("global_dataset", args.dataset)
-                set_global("global_instance_id", instance_id)
-                set_global("global_code_snippet", code_snippet)
-
-                # search
-                search.search(args, task_queue, meta_model, blocks, verifier_model)
 
         elif 'gpqa_diamond' in args.dataset:
 
             cot_instruction = "Please think step by step and then solve the task."
             # output_description = "Return ONLY the alphabet choice, i.e. A or B or C or D."
-            output_description = "If the question is asked for a multiple-choice result, Return ONLY the alphabet choice, i.e. A or B or C or D; If the question is asked for more than multiple-choice results, Return what the question asked and make sure the answer is complete."
+            output_description = ("If the question is asked for a multiple-choice result, Return ONLY the alphabet choice, i.e. A or B or C or D; "
+                                  "If the question is asked for more than multiple-choice results, "
+                                  "return what the question asked and make sure the answer is complete.")
             # need to consider sub-task output as well (no fixed form for sub-tasks)
             debate_role = ['Biology Expert', 'Physics Expert', 'Chemistry Expert', 'Science Generalist']
 
@@ -407,7 +276,8 @@ def main():
                 instance_id = example_id
 
                 if args.given_examples:
-                    if example_id not in args.given_examples: continue
+                    if example_id not in args.given_examples:
+                        continue
 
                 args.expr_name = f'question/meta_agent/{args.dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
                 print('args.expr_name: ', args.expr_name)
@@ -424,25 +294,31 @@ def main():
                     task_queue.append(taskInfo)
                     final_question.append(task_content)
 
-                set_global("global_output_description", output_description)
-                set_global("global_score_compute", data_scorer.score)
-                set_global("global_max_round", max_round)
-                set_global("global_max_sc", max_sc)
-                set_global("global_debate_role", debate_role)
-                set_global("global_cot_instruction", cot_instruction)
-                set_global("global_node_model", node_model)
-                set_global("global_answers", answers)
-                set_global("global_questions", final_question)
-                set_global("global_use_oracle_verifier", use_oracle_verifier)
-                set_global("global_example_id", example_id)
-                set_global("global_response_dict", [])
-                set_global("global_dataset", args.dataset)
-                set_global("global_instance_id", instance_id)
-                set_global("global_code_snippet", code_snippet)
+                extra_info["output_description"] = output_description
+                extra_info["score_compute"] = data_scorer.score
+                extra_info["max_round"] = max_round
+                extra_info["max_sc"] = max_sc
+                extra_info["debate_role"] = debate_role
+                extra_info["cot_instruction"] = cot_instruction
+                extra_info["node_model"] = node_model
+                extra_info["answers"] = answers
+                extra_info["questions"] = final_question  # 注意：此处原始代码使用了 final_question 变量
+                extra_info["use_oracle_verifier"] = use_oracle_verifier
+                extra_info["example_id"] = example_id
+                extra_info["response_dict"] = []
+                extra_info["dataset"] = args.dataset
+                extra_info["instance_id"] = instance_id
+                extra_info["code_snippet"] = code_snippet
 
                 # search
-                search.search(args, task_queue, meta_model, blocks, verifier_model)
+                search.search(args, extra_info, task_queue, meta_model, blocks, verifier_model)
 
 
         else:
             raise NotImplementedError
+
+
+if __name__ == '__main__':
+    args = parse_arguments()
+
+    asyncio.run(main(args))

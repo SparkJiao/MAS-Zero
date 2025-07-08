@@ -1,30 +1,28 @@
-import argparse
 import copy
+import functools
+import inspect
 import json
 import os
-import random
+import re
+import types
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
+from typing import Tuple, List
 
-import backoff
 import numpy as np
 import openai
+from tqdm.asyncio import tqdm_asyncio
 from tqdm import tqdm
 
-import re
-
-from typing import Any, Tuple, List
-from datasets import load_dataset
-import pandas as pd
 import common
-from common import HTML_JINJA, get_init_archive, get_prompt_local, get_reflexion_prompt, SingleEvalResult, get_reflexion_after_eval_local
-from common import get_json_response_from_gpt, get_json_response_from_gpt_reflect_local, _pack_message
-from utils import random_id, bootstrap_confidence_interval
 from common import ANSWER_PATTERN, shorten_context, merge_context
-import copy
+from common import HTML_JINJA, get_init_archive_local, get_prompt_local, SingleEvalResult, get_reflexion_after_eval_local
+from common import get_json_response_from_gpt_local, get_json_response_from_gpt_reflect_local, _pack_message
 from prompts.swe.patch_oracle import AGENTLESS_REPAIR
 from utils import extract_xml
-from shared_vars import set_global, get_global
+from score import DataScorer
+from utils import random_id, bootstrap_confidence_interval
+from sampler import get_model
+import asyncio
 
 client = openai.OpenAI()
 
@@ -34,7 +32,7 @@ json_next_step_prompt = """{prev_info}Given the above, answer the following ques
 
 If the question is too complicated or information is missing, you still need to give your best answer but add \
 (1) an additional mark [TOO_HARD] in the next line of your final answer \
-(2) information request or decomposison suggestion in the next line of the [TOO_HARD] mark, in the "answer" entry (for example, 300
+(2) information request or decomposition suggestion in the next line of the [TOO_HARD] mark, in the "answer" entry (for example, 300
 [TOO_HARD]
 Suggestion:...) and justify why you think so in the "thinking" entry"""
 
@@ -90,9 +88,8 @@ class LLMAgentBase:
 
     def generate_prompt(self, input_infos, extra_info, instruction, is_sub_task=False) -> Tuple[str, str]:
 
-        node_model = extra_info["node_model"]
         output_description = extra_info["output_description"]
-        format_inst = extra_info["format_inst"]
+        format_inst = extra_info["FORMAT_INST"]
 
         format_choice = extra_info["format_choice"]
 
@@ -107,7 +104,7 @@ class LLMAgentBase:
         else:
             raise NotImplementedError
 
-        system_prompt = role2desc(self.role) + "\n\n" + format_inst(output_fields_and_description)
+        system_prompt = role2desc(self.role) + "\n\n" + format_inst.format(request_keys=output_fields_and_description)
 
         # construct input infos text
         input_infos_text = ''
@@ -166,7 +163,7 @@ class LLMAgentBase:
             _pack_message(content=prompt, role="user")]
         # use system prompt
 
-        response_json = await get_json_response_from_gpt(prompt, self.model, self.output_fields, self.temperature)
+        response_json = await get_json_response_from_gpt_local(prompt, self.model, self.output_fields, self.temperature, extra_info)
 
         output_infos = []
         for key, value in response_json.items():
@@ -178,7 +175,7 @@ class LLMAgentBase:
         return f"{self.agent_name} {self.id}"
 
     async def __call__(self, input_infos: list, extra_info, instruction, iteration_idx=-1, is_sub_task=False):
-        return self.query(input_infos, extra_info, instruction, iteration_idx=iteration_idx, is_sub_task=is_sub_task)
+        return await self.query(input_infos, extra_info, instruction, iteration_idx=iteration_idx, is_sub_task=is_sub_task)
 
 
 class AgentSystem:
@@ -207,7 +204,7 @@ class AgentSystem:
         return final_answer
 
 
-def evaluate_forward_fn(args, extra_info, forward_str):
+async def evaluate_forward_fn(extra_info, forward_str):
     # dynamically define forward()
     # modified from https://github.com/luchris429/DiscoPOP/blob/main/scripts/launch_evo.py
 
@@ -215,21 +212,40 @@ def evaluate_forward_fn(args, extra_info, forward_str):
 
     # if you want debug, remove the section so that you can see the detailed error line
     namespace = {}
-    exec(forward_str, extra_info, namespace)
+    global_env = dict(extra_info)
+    global_env.update({
+        "AgentSystem": AgentSystem,
+        "LLMAgentBase": LLMAgentBase,
+        "Info": Info,
+    })
+    exec(forward_str, global_env, namespace)  # This defines a `forward` function here
     names = list(namespace.keys())
     if len(names) != 1:
         raise AssertionError(f"{len(names)} things in namespace. Please only provide 1")
     func = namespace[names[0]]
     if not callable(func):
         raise AssertionError(f"{func} is not callable")
-    setattr(AgentSystem, "forward", func)
+    # setattr(AgentSystem, "forward", func)
+
+    # 如果 forward_str 里写的是同步函数，包装成异步
+    # if not inspect.iscoroutinefunction(func):
+    #     async def _async_wrapper(self, *a, **kw):
+    #         return await asyncio.to_thread(func, self, *a, **kw)
+    #
+    #     forward = _async_wrapper
+    # else:
+    #     async def forward(self, *args, **kwargs):
+    #         return await func(self, *args, **kwargs)
 
     agent_system = AgentSystem()
+    # Assign the function to this instance only without affecting other instances across threads
+    agent_system.forward = types.MethodType(func, agent_system)
 
-    global_max_workers = extra_info["max_workers"]
-    global_task_queue = extra_info["task_queue"]
-    global_answers = extra_info["answers"]
-
+    # global_max_workers = extra_info["max_workers"]
+    task_queue = extra_info["task_queue"]
+    answers = extra_info["answers"]
+    technique = extra_info["dataset"].split('/')[0]
+    data_scorer = DataScorer(extra_info["dataset"], technique, extra_info["verifier_model"])
     agent_system.node_model = extra_info["node_model"]
     agent_system.cot_instruction = extra_info["cot_instruction"]
     agent_system.max_sc = extra_info["max_sc"]
@@ -239,8 +255,12 @@ def evaluate_forward_fn(args, extra_info, forward_str):
     agent_system.example_id = extra_info["example_id"]
     agent_system.instance_id = extra_info["instance_id"]
 
-    with ThreadPoolExecutor(max_workers=global_max_workers) as executor:
-        results = list(tqdm(executor.map(agent_system.forward, global_task_queue), total=len(global_task_queue)))
+    # tasks = [agent_system.forward(item) for item in task_queue]
+    # results = await tqdm_asyncio.gather(*tasks, desc="Evaluating forward function", total=len(tasks))
+    results = []
+    for item in tqdm(task_queue, desc="Evaluating forward function", total=len(task_queue)):
+        res = await agent_system.forward(item, extra_info)
+        results.append(res)
 
     prompt_messages = [res.prompt for q_idx, res in enumerate(results)]
     response_texts = [str(res.content) for q_idx, res in enumerate(results)]
@@ -254,36 +274,35 @@ def evaluate_forward_fn(args, extra_info, forward_str):
     agents = [res.agents for q_idx, res in enumerate(results)]
 
     print('response_texts: ', response_texts[0])
-    print('gold answers: ', global_answers[0])
-    print('length: ', len(response_texts), len(global_answers))
+    print('gold answers: ', answers[0])
+    print('length: ', len(response_texts), len(answers))
 
-    global_score_compute = extra_info["score_compute"]
-    global_example_id = extra_info["example_id"]
-    global_n = extra_info["n"]
-    global_questions = extra_info["questions"]
-    global_answers = extra_info["answers"]
-    global_use_oracle_verifier = extra_info["use_oracle_verifier"]
-    global_judge_path = extra_info["judge_path"]
-    global_response_path = extra_info["response_path"]
-    global_response_dict = extra_info["response_dict"]
-    global_instance_id = extra_info["instance_id"]
-    global_code_snippet = extra_info["code_snippet"]
+    example_id = extra_info["example_id"]
+    n = extra_info["n"]
+    questions = extra_info["questions"]
+    answers = extra_info["answers"]
+    use_oracle_verifier = extra_info["use_oracle_verifier"]
+    judge_path = extra_info["judge_path"]
+    response_path = extra_info["response_path"]
+    response_dict = extra_info["response_dict"]
+    instance_id = extra_info["instance_id"]
+    code_snippet = extra_info["code_snippet"]
 
     result_list = [
-        global_score_compute(
-            global_example_id,
-            global_n,
+        await data_scorer.score(
+            example_id,
+            n,
             prompt_messages[response_text_id],
-            global_questions[response_text_id],
+            questions[response_text_id],
             response_text,
-            global_answers[response_text_id],
+            answers[response_text_id],
             sub_tasks_text,
-            global_use_oracle_verifier,
-            global_judge_path,
-            global_response_path,
-            global_response_dict,
-            global_instance_id,
-            global_code_snippet)
+            use_oracle_verifier,
+            judge_path,
+            response_path,
+            response_dict,
+            instance_id,
+            code_snippet)
         for response_text_id, response_text in enumerate(response_texts)
     ]
 
@@ -298,32 +317,31 @@ def evaluate_forward_fn(args, extra_info, forward_str):
     return acc_oracle_verifier_list, acc_model_verifier_list, results, sub_tasks, agents, response_texts
 
 
-def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
+async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_generation,
+                 save_dir, expr_name, option, dataset, defer_verifier, debug_max):
     questions = extra_info["questions"]
-    global_node_model = extra_info["node_model"]
+    node_model = extra_info["node_model"]
 
-    n_generation = args.n_generation
     print(f"a new search start")
 
     print(f"problem length: {len(questions)}")
-    max_workers = min(len(questions), args.max_workers) if args.multiprocessing else 1
 
-    task_queue = [Info(field_name, author, content, prompt, sub_tasks, agnets, iteration_idx) for
-                  field_name, author, content, prompt, sub_tasks, agnets, iteration_idx in task_queue]
+    task_queue = [Info(field_name, author, content, prompt, sub_tasks, agents, iteration_idx) for
+                  field_name, author, content, prompt, sub_tasks, agents, iteration_idx in task_queue]
 
     # extra_info["global_max_workers", max_workers)
     # extra_info["global_task_queue", task_queue)
-    extra_info["max_workers"] = max_workers
+    # extra_info["max_workers"] = max_workers
     extra_info["task_queue"] = task_queue
 
-    next_solution_path = os.path.join(args.save_dir, f"{args.expr_name}_{args.option}_next_solution.json")
-    msg_path = os.path.join(args.save_dir, f"{args.expr_name}_{args.option}_msg.json")
-    mem_path = os.path.join(args.save_dir, f"{args.expr_name}_{args.option}_mem.json")
-    file_path = os.path.join(args.save_dir, f"{args.expr_name}_{args.option}_archive.json")
-    result_path = f'./results/question/meta_agent/{args.dataset}/{meta_model}_{global_node_model}_{verifier_model}.results'
-    oracle_acc_result_path = f'./results/question/meta_agent/{args.dataset}/{meta_model}_{global_node_model}_oracle.results'
-    judge_path = os.path.join(args.save_dir, f"{args.expr_name}_{args.option}_judge")
-    response_path = os.path.join(args.save_dir, f"{args.expr_name}_{args.option}_response")
+    next_solution_path = os.path.join(save_dir, f"{expr_name}_{option}_next_solution.json")
+    msg_path = os.path.join(save_dir, f"{expr_name}_{option}_msg.json")
+    mem_path = os.path.join(save_dir, f"{expr_name}_{option}_mem.json")
+    file_path = os.path.join(save_dir, f"{expr_name}_{option}_archive.json")
+    result_path = f'./async_results/question/meta_agent/{dataset}/{meta_model}_{node_model}_{verifier_model}.results'
+    oracle_acc_result_path = f'./async_results/question/meta_agent/{dataset}/{meta_model}_{node_model}_oracle.results'
+    judge_path = os.path.join(save_dir, f"{expr_name}_{option}_judge")
+    response_path = os.path.join(save_dir, f"{expr_name}_{option}_response")
     os.makedirs(os.path.dirname(judge_path), exist_ok=True)
 
     print('file_path: ', file_path)
@@ -346,8 +364,8 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
 
     if os.path.exists(response_path):
         with open(response_path, 'r') as json_file:
-            global_response_dict = json.load(json_file)
-        extra_info["response_dict"] = global_response_dict
+            response_dict = json.load(json_file)
+        extra_info["response_dict"] = response_dict
 
     if os.path.exists(file_path):
         with open(file_path, 'r') as json_file:
@@ -357,126 +375,128 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
         else:
             start = 0
     else:
-        archive = get_init_archive(blocks)  # TODO: make this with arguement
+        archive = get_init_archive_local(blocks, extra_info)  # TODO: make this with argument
         start = 0
 
     cur_archive = copy.deepcopy(archive)  # do not change the solution inside, need deepcopy
 
-    global_use_oracle_verifier = extra_info["use_oracle_verifier"]
+    use_oracle_verifier = extra_info["use_oracle_verifier"]
     example_id = extra_info["example_id"]
 
-    global_ns = []
-
-    for solution_i, solution in enumerate(cur_archive):
-
-        if 'fitness' in solution:
-            continue
-
-        solution["generation"] = "initial"
-        print(f'============Initial Archive: {solution["name"]}=================')
-
-        if solution["name"] in global_ns:  # TODO: separate it
-            extra_info["n"] = f'{solution["name"]}_{solution_i}'
-
-        else:
-            extra_info["n"] = solution["name"]
-
-        global_n = extra_info["global_n"]
-        global_ns.append(global_n)
-
-        # print(solution["code"])
-        acc_oracle_verifier_list, acc_model_verifier_list, results, _, _, final_response = evaluate_forward_fn(args, extra_info, solution["code"])
-
-        # TODO: can we somehow also log acc_oracle_verifier_list so that we can know how accurate acc_model_verifier_list is?
-        if global_use_oracle_verifier:
-            acc_list = acc_oracle_verifier_list
-        else:
-            acc_list = acc_model_verifier_list
-
-        if args.defer_verifier:
-            fitness_str = bootstrap_confidence_interval([0.0])
-            solution["acc"] = np.mean([0.0])
-
-        else:
-            fitness_str = bootstrap_confidence_interval(acc_list)
-            solution["acc"] = np.mean(acc_list)
-
-        solution["fitness"] = fitness_str
-        solution["total_cost"] = extra_info["global_COST_TOTAL"]
-
-        print(f"acc_list:", acc_list)
-        print(f"mean acc_list:", np.mean(acc_list))
-        print(f"bootstrap_confidence_interval: {fitness_str}")
-
-        if 'swe_bench' in args.dataset:
-            extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
-            if '<patch>' in extracted_answer:
-                extracted_answer = extract_xml(extracted_answer, 'patch').strip()
-        else:
-            extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
-
-        if '[TOO_HARD]' in extracted_answer:  # we cannot add [TOO_HARD] in memory
-            extracted_answer = extracted_answer[:extracted_answer.index('[TOO_HARD]')]
-        memory.append({extracted_answer: fitness_str})
-        print(f'save json to {mem_path}')
-        with open(mem_path, 'w') as json_file:
-            json.dump(memory, json_file, indent=4)
-
-        # save results
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        print(f'save json to {file_path}')
-        with open(file_path, 'w') as json_file:
-            json.dump(cur_archive, json_file, indent=4)
-
-        report_filename = os.path.join(args.save_dir, f'{args.expr_name}_{solution["name"]}_{args.option}_debug.html')
-        print(f"Writing report to {report_filename}")
-        with open(report_filename, "w") as fh:
-            fh.write(common.make_report(results))
-        metrics = results.metrics | {"score": results.score}
-        print('metrics: ', metrics)
-        print(f"COST_TOTAL:", extra_info["global_COST_TOTAL"])
-
-        with open(oracle_acc_result_path, "a+") as fh:
-            fh.write(
-                f'experiment {example_id}: 1 (initial {solution["name"]}): acc_oracle_verifier_list: {acc_oracle_verifier_list} '
-                f'acc_model_verifier_list: {acc_model_verifier_list}\n')
-
-        if not args.defer_verifier:
-            if np.mean(acc_list) == 1:
-                if global_use_oracle_verifier:
-                    with open(result_path, "a+") as fh:
-                        fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
-
-                else:
-                    # check with the real answer to decide whether to mark as correct
-                    if np.mean(acc_oracle_verifier_list) == 1:  #
-                        with open(result_path, "a+") as fh:
-                            fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
-
-                # even the judge is incorrect, we still stop because have to listen to the judge
-                n_generation = 0  # no need
-                start = 0  # no need
-                print(f'write to {result_path}. break')
-                break
-
-            if acc_oracle_verifier_list[0] == 1: exit()  # debug
+    # global_ns = []
+    # Temporarily disable the initial archive evaluation
+    # for solution_i, solution in enumerate(cur_archive):
+    #
+    #     if 'fitness' in solution:
+    #         continue
+    #
+    #     solution["generation"] = "initial"
+    #     print(f'============Initial Archive: {solution["name"]}=================')
+    #
+    #     if solution["name"] in global_ns:  # TODO: separate it
+    #         extra_info["n"] = f'{solution["name"]}_{solution_i}'
+    #     else:
+    #         extra_info["n"] = solution["name"]
+    #
+    #     global_n = extra_info["global_n"]
+    #     global_ns.append(global_n)
+    #
+    #     # print(solution["code"])
+    #     acc_oracle_verifier_list, acc_model_verifier_list, results, _, _, final_response = await evaluate_forward_fn(args, extra_info, solution["code"])
+    #
+    #     # TODO: can we somehow also log acc_oracle_verifier_list so that we can know how accurate acc_model_verifier_list is?
+    #     if global_use_oracle_verifier:
+    #         acc_list = acc_oracle_verifier_list
+    #     else:
+    #         acc_list = acc_model_verifier_list
+    #
+    #     if args.defer_verifier:
+    #         fitness_str = bootstrap_confidence_interval([0.0])
+    #         solution["acc"] = np.mean([0.0])
+    #
+    #     else:
+    #         fitness_str = bootstrap_confidence_interval(acc_list)
+    #         solution["acc"] = np.mean(acc_list)
+    #
+    #     solution["fitness"] = fitness_str
+    #     solution["total_cost"] = extra_info["global_COST_TOTAL"]
+    #
+    #     print(f"acc_list:", acc_list)
+    #     print(f"mean acc_list:", np.mean(acc_list))
+    #     print(f"bootstrap_confidence_interval: {fitness_str}")
+    #
+    #     if 'swe_bench' in args.dataset:
+    #         extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
+    #         if '<patch>' in extracted_answer:
+    #             extracted_answer = extract_xml(extracted_answer, 'patch').strip()
+    #     else:
+    #         extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
+    #
+    #     if '[TOO_HARD]' in extracted_answer:  # we cannot add [TOO_HARD] in memory
+    #         extracted_answer = extracted_answer[:extracted_answer.index('[TOO_HARD]')]
+    #     memory.append({extracted_answer: fitness_str})
+    #     print(f'save json to {mem_path}')
+    #     with open(mem_path, 'w') as json_file:
+    #         json.dump(memory, json_file, indent=4)
+    #
+    #     # save results
+    #     os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    #     print(f'save json to {file_path}')
+    #     with open(file_path, 'w') as json_file:
+    #         json.dump(cur_archive, json_file, indent=4)
+    #
+    #     report_filename = os.path.join(args.save_dir, f'{args.expr_name}_{solution["name"]}_{args.option}_debug.html')
+    #     print(f"Writing report to {report_filename}")
+    #     with open(report_filename, "w") as fh:
+    #         fh.write(common.make_report(results))
+    #     metrics = results.metrics | {"score": results.score}
+    #     print('metrics: ', metrics)
+    #     print(f"COST_TOTAL:", extra_info["global_COST_TOTAL"])
+    #
+    #     with open(oracle_acc_result_path, "a+") as fh:
+    #         fh.write(
+    #             f'experiment {example_id}: 1 (initial {solution["name"]}): acc_oracle_verifier_list: {acc_oracle_verifier_list} '
+    #             f'acc_model_verifier_list: {acc_model_verifier_list}\n')
+    #
+    #     if not args.defer_verifier:
+    #         if np.mean(acc_list) == 1:
+    #             if global_use_oracle_verifier:
+    #                 with open(result_path, "a+") as fh:
+    #                     fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
+    #
+    #             else:
+    #                 # check with the real answer to decide whether to mark as correct
+    #                 if np.mean(acc_oracle_verifier_list) == 1:  #
+    #                     with open(result_path, "a+") as fh:
+    #                         fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
+    #
+    #             # even the judge is incorrect, we still stop because have to listen to the judge
+    #             n_generation = 0  # no need
+    #             start = 0  # no need
+    #             print(f'write to {result_path}. break')
+    #             break
+    #
+    #         if acc_oracle_verifier_list[0] == 1:
+    #             exit()  # debug
     # exit()
 
-    global_task_queue = extra_info["task_queue"]
-    global_format_choice = extra_info["format_choice"]
+    task_queue = extra_info["task_queue"]
+    format_choice = extra_info["format_choice"]
+
+    print(f"Task queue: {task_queue}")
 
     for n in range(start, n_generation):
         print(f"============Generation {n + 1}=================")
-        extra_info["global_n"] = n
+        extra_info["n"] = n
 
-        if n == 0:  # initial propose
-            system_prompt, prompt = get_prompt_local(cur_archive, extra_info, option=args.option, task_queue=global_task_queue)
-            msg_list = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ]
-
-            next_solution = get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
+        # if n == 0:  # initial propose
+        #     system_prompt, prompt = get_prompt_local(cur_archive, extra_info, option=args.option, task_queue=task_queue)
+        #     msg_list = [
+        #         {"role": "system", "content": system_prompt},
+        #         {"role": "user", "content": prompt},
+        #     ]
+        #
+        #     next_solution = get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
 
         if os.path.exists(msg_path):
             print(f'load msg_list from {msg_path}')
@@ -490,7 +510,8 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
 
         else:
             # if no next solutionm, you have to do it again
-            system_prompt, prompt = get_prompt_local(cur_archive, extra_info, option=args.option, task_queue=global_task_queue)
+            system_prompt, prompt = get_prompt_local(cur_archive, format_choice, extra_info["no_decompose"], extra_info["no_meta_reward"],
+                                                     option=option, task_queue=task_queue)
 
             msg_list = [
                 {"role": "system", "content": system_prompt},
@@ -501,21 +522,23 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
                                                                       'LLM Debate and Reflexion, by writing the for-loop, if you choose to use them).'},
             ]
 
-            next_solution = get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model)
+            next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
 
         acc_list = []
-        for _ in range(args.debug_max):
+        for _ in range(debug_max):
             try:  # in case the generated code is not correct
-                acc_oracle_verifier_list, acc_model_verifier_list, results, sub_tasks, agents, final_response = evaluate_forward_fn(args, extra_info,
-                                                                                                                                    next_solution["code"])
-
-                if global_use_oracle_verifier:
+                acc_oracle_verifier_list, acc_model_verifier_list, results, sub_tasks, agents, final_response = await evaluate_forward_fn(
+                    extra_info, next_solution["code"]
+                )
+                if use_oracle_verifier:
                     acc_list = acc_oracle_verifier_list
                 else:
                     acc_list = acc_model_verifier_list
                 break
             except Exception as e:
                 # %%%%%%%%%%%%% only for debug
+                import traceback
+                traceback.print_exc()
                 print("During evaluation:")
                 print(e)
                 debug_list = copy.deepcopy(msg_list)  # deep copy
@@ -523,10 +546,10 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
 
                 debug_list.append({"role": "assistant", "content": next_solution})
 
-                if global_format_choice == 'xml':
+                if format_choice == 'xml':
 
-                    global_shorten_context = extra_info["shorten_context"]
-                    if global_shorten_context:
+                    _shorten_context = extra_info["shorten_context"]
+                    if _shorten_context:
                         debug_list_reflect = shorten_context(debug_list)
                     else:
                         debug_list_reflect = debug_list
@@ -553,8 +576,10 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
                                                           f"Repeat name in 'name',"})
                     # TODO: sometimes still cannot fix. The reason is, the forward is a string, which provide limited error information
                 try:
-                    next_solution = get_json_response_from_gpt_reflect_local(debug_list_reflect, meta_model)
+                    next_solution = await get_json_response_from_gpt_reflect_local(debug_list_reflect, meta_model, extra_info)
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     print("During LLM generate new solution:")
                     print(e)
                     continue
@@ -566,7 +591,7 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
             n -= 1  # rerun
             continue
 
-        if args.defer_verifier:
+        if defer_verifier:
             fitness_str = bootstrap_confidence_interval([0.0])
             next_solution["acc"] = [0.0]
 
@@ -581,12 +606,12 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
 
         if not (extra_info["no_decompose"] or extra_info["no_meta_reward"]):
             next_solution["sub_tasks"] = sub_tasks
-        if not extra_info["global_no_meta_rew]rd"]:
+        if not extra_info["no_meta_reward"]:
             next_solution["agents"] = agents
 
         next_solution["final_response"] = final_response
 
-        if 'swe_bench' in args.dataset:
+        if 'swe_bench' in dataset:
             extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
@@ -615,9 +640,9 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
                 f'experiment {example_id}: 1 (generation {n}+1): acc_oracle_verifier_list: {acc_oracle_verifier_list} '
                 f'acc_model_verifier_list: {acc_model_verifier_list}\n')
 
-        if not args.defer_verifier:
+        if not defer_verifier:
             if np.mean(acc_list) == 1:
-                if global_use_oracle_verifier:
+                if use_oracle_verifier:
                     with open(result_path, "a+") as fh:
                         fh.write(f'experiment {example_id}: 1 (generation {n}+1) \n')
                 else:
@@ -630,15 +655,16 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
                 break  # good enough
 
         # not good, need update again %%%%%%%%%%%%%
-        Reflexion_after_eval_prompt = get_reflexion_after_eval_local(option=args.option, extra_info=extra_info)
+        Reflexion_after_eval_prompt = get_reflexion_after_eval_local(option, extra_info["format_choice"], extra_info["no_decompose"],
+                                                                     extra_info["no_meta_reward"])
 
-        if 'workflow_search' in args.dataset and 'swe_bench' in args.dataset:
-            global_code_snippet = extra_info["global_code_snippet"]
-            Reflexion_after_eval_prompt = f'Recall the requirement of original questions: \n\nGiven code_snippet \n\n{global_code_snippet}; Generate a patch following requirements: {AGENTLESS_REPAIR} \n\n Now please ' + Reflexion_after_eval_prompt + f'\n\nIMPORTANT Note: The above "code" entry is only for the code of your improved architecture and sub-tasks.'
+        if 'workflow_search' in dataset and 'swe_bench' in dataset:
+            code_snippet = extra_info["code_snippet"]
+            Reflexion_after_eval_prompt = f'Recall the requirement of original questions: \n\nGiven code_snippet \n\n{code_snippet}; Generate a patch following requirements: {AGENTLESS_REPAIR} \n\n Now please ' + Reflexion_after_eval_prompt + f'\n\nIMPORTANT Note: The above "code" entry is only for the code of your improved architecture and sub-tasks.'
             # For example: {EXAMPLE_META} # Add Example may make the output patch worse
 
         # recall the xml format
-        if global_format_choice == 'xml':
+        if format_choice == 'xml':
             Reflexion_after_eval_prompt += "IMPORTANT: 1. Make sure to return in a WELL-FORMED XML object. Wrap the required entries with <(entry_name)> and </(entry_name)>. Reply EXACTLY with the following XML fileds.\n<reflection> [Your reflection] </reflection>\n<thought> [Your thought.] </thought>\n<name> [Your name.] </name>\n<code> [Your code.] </code>\n\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object! However, Do not use XML format inside each entry\n\n2. You must follow all the requirements in the Initial Round (Round 0) (for example, If you choose to use self-consistency, LLM Debate or Relexion, you need to ACTUALLY IMPLEMENET their structure by wrting the for-loop explictly).\n\n3.the <code> corresponds to the exact “forward()” function in Python code that you would like to try. You must write a COMPLETE CODE in <code>: Your code will be part of the entire project (so do not implement any other part), so please implement complete, reliable, reusable code snippets."
 
         next_solution["memory"] = memory  # TODO: it may output 128K limit
@@ -650,20 +676,21 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
                          "content": f'Round {n + 1}: The entries (code, thoughts, agents, reflection, etc.) have been updated since last round (Round {n}). Now Using insights from previous rounds, reflect again on the new outputs after round {n}.\n\n' + Reflexion_after_eval_prompt.replace(
                              'round [last_round]', f'round {n}').replace('round [last_last_round]', f'round {n - 1}')})
 
-        global_shorten_context = extra_info["shorten_context"]
-        global_merge_context = extra_info["merge_context"]
+        _shorten_context = extra_info["shorten_context"]
+        _merge_context = extra_info["merge_context"]
 
-        if global_shorten_context:
+        if _shorten_context:
             msg_list_reflect = shorten_context(msg_list)  # the maximum length is limited, we cannot use all
         else:
             msg_list_reflect = msg_list  # if you have enough length
 
-        if global_merge_context:  # merge to single turn
+        if _merge_context:  # merge to single turn
             msg_list_reflect = merge_context(msg_list_reflect)
 
             # TODO: do we want more previous sampeld? we need to be careful about the max limit for qwen
 
-        next_solution = get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list_reflect), meta_model, extra_info)  # deep copy to avoid in-place changes
+        next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list_reflect), meta_model,
+                                                                       extra_info)  # deep copy to avoid in-place changes
         if next_solution == 'bad_request':
             print('bad_request; break fo now')
             break
@@ -695,7 +722,7 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
         convo = prompt_message + [dict(content=response_text, role="assistant")]
         results = SingleEvalResult(html=html, score=0, convo=convo)
         results = common.aggregate_results([results])
-        report_filename = os.path.join(args.save_dir, f'{args.expr_name}_{next_solution["name"].strip()}_{args.option}_generation_{n}_debug.html')
+        report_filename = os.path.join(save_dir, f'{expr_name}_{next_solution["name"].strip()}_{option}_generation_{n}_debug.html')
         print(f"Writing report to {report_filename}")
         with open(report_filename, "w") as fh:
             fh.write(common.make_report(results))
@@ -709,6 +736,6 @@ def search(args, extra_info, task_queue, meta_model, blocks, verifier_model):
         with open(next_solution_path, 'w') as json_file:
             json.dump(next_solution, json_file, indent=4)
 
-        if not args.defer_verifier:
+        if not defer_verifier:
             if acc_oracle_verifier_list[0] == 1:
                 exit()  # debug

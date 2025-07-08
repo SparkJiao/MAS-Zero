@@ -1,68 +1,24 @@
+import copy
+import io
+import json
 import os
 from collections import defaultdict
+from dataclasses import dataclass, field
 from multiprocessing.pool import ThreadPool
 from typing import Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import io
-import jinja2
-import numpy as np
-import requests
-from tqdm import tqdm
-
-from dataclasses import dataclass, field
-from typing import Any
-
-import json
-from sampler.o_chat_completion_sampler import OChatCompletionSampler
-from sampler.claude_sampler import ClaudeCompletionSampler, CLAUDE_SYSTEM_MESSAGE_LMSYS
-from sampler.chat_completion_sampler import (
-    OPENAI_SYSTEM_MESSAGE_API,
-    OPENAI_SYSTEM_MESSAGE_CHATGPT,
-    ChatCompletionSampler,
-)
-import re
-import argparse
-import copy
-import json
-import os
-import random
-from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
 import backoff
+import jinja2
 import numpy as np
 import openai
-from tqdm import tqdm
-import re
-from typing import Any
-from datasets import load_dataset
-import pandas as pd
-import common
-import json
-
-import os
-from collections import defaultdict
-from multiprocessing.pool import ThreadPool
-from typing import Any
-
-import io
-import jinja2
-import numpy as np
 import requests
 from tqdm import tqdm
 
-from dataclasses import dataclass, field
-from typing import Any
 from blocks.cot import COT
 from blocks.cot_sc import COT_SC
 from blocks.llm_debate import LLM_debate
-import json
-from sampler.chat_completion_sampler import ChatCompletionSampler
-from sampler.together_completion_sampler import ChatCompletionSampler as ToChatCompletionSampler
-from sampler.vllm_completion_sampler import ChatCompletionSampler as VllmChatCompletionSampler
-
-import copy
-from shared_vars import set_global, get_global, add_to_global_cost
+from sampler import get_model
+from shared_vars import get_global, add_to_global_cost
 
 Message = dict[str, Any]  # keys role, content
 MessageList = list[Message]
@@ -236,6 +192,19 @@ def check_equality(sampler: SamplerBase, expr1: str, expr2: str, use_oracle_veri
     return response.lower().strip() == "yes"
 
 
+async def async_check_equality(sampler: SamplerBase, expr1: str, expr2: str, use_oracle_verifier=False, judge_path=None):
+    if use_oracle_verifier:  # directly use oracle
+        prompt = EQUALITY_TEMPLATE % {"expression1": expr1, "expression2": expr2}
+        res = await sampler([dict(content=prompt, role="user")], response_format='normal')
+        response, _ = res
+        print('response oracle verifier: ', response)
+
+    else:  # use model verifier
+        raise NotImplementedError
+
+    return response.lower().strip() == "yes"
+
+
 def _pack_message(role: str, content: Any):
     return {"role": str(role), "content": content}
 
@@ -245,7 +214,7 @@ def get_json_response_from_gpt(
         msg,
         model,
         output_fields,
-        tempreture
+        temperature,
 ):
     # We do not do anything with system prompt
 
@@ -258,7 +227,7 @@ def get_json_response_from_gpt(
     while True:
         debug_count += 1
         try:
-            sampler_return = sampler(msg, tempreture)
+            sampler_return = sampler(msg, temperature)
 
             # TODO: we do not want to break here. If it is just excution, it must be runnable by keep retrying
             # if sampler_return == "" or debug_count > 5: #bad request
@@ -296,6 +265,75 @@ def get_json_response_from_gpt(
            ) / 1000
     add_to_global_cost(cost)
     # print('COST_TOTAL: ',COST_TOTAL)
+
+    return json_dict
+
+
+@backoff.on_exception(backoff.expo, openai.RateLimitError)
+async def get_json_response_from_gpt_local(
+        msg,
+        model,
+        output_fields,
+        temperature,
+        extra_info,
+):
+    # We do not do anything with system prompt
+
+    # print('msg: ',msg)
+    # print('model: ',model)
+    # model_sampler_map = get_global("global_model_sampler_map")
+    # sampler = model_sampler_map[model]
+    sampler = get_model(model)
+
+    debug_count = 0
+    while True:
+        debug_count += 1
+        response_text = ""
+        try:
+            sampler_return = await sampler(msg, temperature)
+
+            # # TODO: we do not want to break here. If it is just excution, it must be runnable by keep retrying
+            if sampler_return == "" or debug_count > 5:  # bad request
+                json_dict = {key: "" for key in output_fields}
+                json_dict["error"] = "bad request. Please try again with higher temperature."
+                return json_dict
+
+            response_text, usage = sampler_return
+            json_dict = json.loads(response_text)
+            keys = json_dict.keys()
+
+            is_valid_answer = True
+            if 'answer' in keys and len(json_dict['answer'].strip()) == 0:
+                is_valid_answer = False
+
+            # Hacked by Fangkai to run Qwen3-235B
+            if 'thinking' in output_fields and 'think' in keys and 'thinking' in keys:
+                json_dict.pop('think')
+                keys = json_dict.keys()
+
+            if set(keys) == set(output_fields) and is_valid_answer:
+                # if set(json_dict.keys()) == {'thinking', 'answer'} or set(json_dict.keys()) == {'feedback', 'correct'}:
+                break
+            else:
+                print(f'require output_fields: {output_fields}, json_dict: {keys}; is_valid_answer: {is_valid_answer}')
+
+        except Exception as e:
+            print(f'Execute Error: {e}; response_text: {response_text}')
+
+    # print('json_dict: ',json_dict)
+    if isinstance(usage, dict):
+        prompt_tokens = usage["prompt_tokens"]
+        completion_tokens = usage["completion_tokens"]
+    else:
+        prompt_tokens = usage.prompt_tokens
+        completion_tokens = usage.completion_tokens
+    cost = (
+                   prompt_tokens * model_price_map[model]['prompt']
+                   + completion_tokens * model_price_map[model]['completion']
+           ) / 1000
+    # add_to_global_cost(cost)
+    # print('COST_TOTAL: ',COST_TOTAL)
+    extra_info["COST_TOTAL"] += cost
 
     return json_dict
 
@@ -353,23 +391,25 @@ def get_json_response_from_gpt_reflect(
 
 
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
-def get_json_response_from_gpt_reflect_local(
+async def get_json_response_from_gpt_reflect_local(
         msg,
         model,
         extra_info
 ):
     # "thought":  # "name": "Chain-of-Thought", # "code":
     # print('model: ',model)
-    model_sampler_map = extra_info["global_model_sampler_map"]
+    # model_sampler_map = extra_info["model_sampler_map"]
 
-    sampler = model_sampler_map[model]
+    # sampler = model_sampler_map[model]
+    sampler = get_model(model)
     # print('meta msg: ',msg)
 
     debug_count = 0
     while True:
         debug_count += 1
+        response_text = ""
         try:
-            sampler_return = sampler(msg)
+            sampler_return = await sampler(msg)
             if sampler_return == "" or debug_count > 5:  # bad request
                 json_dict = "bad_request"
                 return json_dict
@@ -380,7 +420,7 @@ def get_json_response_from_gpt_reflect_local(
             # print('json_dict: ',json_dict)
             keys = json_dict.keys()
             # TODO: consider constraint the json like above
-            if 'name' in keys and 'thought' in keys and 'code' in keys and 'def forward(self, taskInfo):' in json_dict['code']:
+            if 'name' in keys and 'thought' in keys and 'code' in keys and 'async def forward(self, taskInfo, extra_info):' in json_dict['code']:
                 try:
                     compile(json_dict['code'], "<string>", "exec")
                 except SyntaxError as e:
@@ -388,14 +428,20 @@ def get_json_response_from_gpt_reflect_local(
                     continue
                 break
             else:  # inocrrect
-                if not 'def forward(self, taskInfo):' in json_dict['code']:
+                if not 'async def forward(self, taskInfo, extra_info):' in json_dict['code']:
                     print(f"code: {json_dict['code']}; reflection: {json_dict['reflection']}")
                 print(f"missing key: {keys}", )
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f'Reflect Error: {e}; response_text: {response_text}')
 
-    prompt_tokens = usage.prompt_tokens
-    completion_tokens = usage.completion_tokens
+    if isinstance(usage, dict):
+        prompt_tokens = usage["prompt_tokens"]
+        completion_tokens = usage["completion_tokens"]
+    else:
+        prompt_tokens = usage.prompt_tokens
+        completion_tokens = usage.completion_tokens
     cost = (
                    prompt_tokens * model_price_map[model]['prompt']
                    + completion_tokens * model_price_map[model]['completion']
@@ -421,6 +467,24 @@ def get_init_archive(blocks):
         'LLM_debate': LLM_debate,
     }
     return [copy.deepcopy(block_map[block]) for block in blocks]  # it may be the same architecture, copy to avpod cross modification
+
+
+def get_init_archive_local(blocks, extra_info):
+    global_format_choice = extra_info["format_choice"]
+    if global_format_choice == 'json':
+        from blocks.reflexion import Reflexion
+    elif global_format_choice == 'xml':
+        from blocks.reflexion_xml import Reflexion
+    else:
+        raise NotImplementedError
+
+    block_map = {
+        'COT': COT,
+        'COT_SC': COT_SC,
+        'Reflexion': Reflexion,
+        'LLM_debate': LLM_debate,
+    }
+    return [copy.deepcopy(block_map[block]) for block in blocks]  # it may be the same architecture, copy to avoid cross modification
 
 
 def import_based_on_option(option):
@@ -458,6 +522,38 @@ def import_based_on_option(option):
     return base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2
 
 
+def import_based_on_option_local(option, no_decompose: bool, no_meta_reward: bool):
+    if option == 'edge':
+        from prompts.edge.init_propose import base, EXAMPLE
+        from prompts.edge.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
+
+    elif option == 'adas':
+        from prompts.adas.init_propose import base, EXAMPLE
+        from prompts.adas.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
+
+    elif option == 'node':
+        from prompts.node.init_propose import base, EXAMPLE
+        from prompts.node.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
+
+    elif option == 'cot_sc':
+        from prompts.cot_sc.init_propose import base, EXAMPLE
+        from prompts.cot_sc.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
+
+    elif option == 'plan':
+        if no_decompose:
+            from prompts.plan.propose_no_decompose import base, EXAMPLE
+        elif no_meta_reward:
+            from prompts.plan.propose_no_meta_reward import base, EXAMPLE
+        else:
+            from prompts.plan.async_propose import base, EXAMPLE
+        from prompts.plan.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
+
+    else:
+        raise NotImplementedError
+
+    return base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2
+
+
 def get_prompt(current_archive, option='', task_queue=None):  # this is for search method
     archive_str = ",\n".join([json.dumps(sol) for sol in current_archive])
     archive_str = f"[{archive_str}]"
@@ -483,11 +579,11 @@ def get_prompt(current_archive, option='', task_queue=None):  # this is for sear
     return system_prompt, prompt
 
 
-def get_prompt_local(current_archive, extra_info, option='', task_queue=None):  # this is for search method
+def get_prompt_local(current_archive, format_choice, no_decompose, no_meta_reward, option='', task_queue=None):  # this is for search method
     archive_str = ",\n".join([json.dumps(sol) for sol in current_archive])
     archive_str = f"[{archive_str}]"
 
-    base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2 = import_based_on_option(option)
+    base, EXAMPLE, Reflexion_prompt_1, Reflexion_prompt_2 = import_based_on_option_local(option, no_decompose, no_meta_reward)
 
     prompt = base.replace("[ARCHIVE]", archive_str)
     prompt = prompt.replace("[EXAMPLE]", json.dumps(EXAMPLE))
@@ -495,14 +591,12 @@ def get_prompt_local(current_archive, extra_info, option='', task_queue=None):  
     if 'Below is the question to solve:\n\n[QUESTION]' in prompt:
         prompt = prompt.replace("[QUESTION]", task_queue[0][2])
 
-    global_format_choice = extra_info["format_choice"]
-
-    if global_format_choice == 'json':
+    if format_choice == 'json':
         system_prompt = ('You are a helpful assistant.\n\n'
                          'Reply EXACTLY with the following JSON format.\n'
                          '{"reflection": "Your reflection (if applicable).", "thought": "Your thought.", "name": "Your name.", "code": "Your code."}\n'
                          'DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!')
-    elif global_format_choice == 'xml':
+    elif format_choice == 'xml':
         system_prompt = ('You are a helpful assistant.\n\n'
                          'Reply EXACTLY with the following XML format.\n'
                          '<reflection> [Your reflection, if applicable] </reflection>\n'
@@ -540,22 +634,17 @@ def get_reflexion_after_eval(option):
     return Reflexion_after_eval_prompt
 
 
-def get_reflexion_after_eval_local(option, extra_info):
-    global_format_choice = extra_info["global_format_choice"]
-
+def get_reflexion_after_eval_local(option, format_choice, no_decompose, no_meta_reward):
     if option == 'plan':
 
-        global_no_decompose = extra_info["global_no_decompose"]
-        global_no_meta_reward = extra_info["global_no_meta_reward"]
-
-        if global_no_meta_reward:  # only consider GPT-4o
+        if no_meta_reward:  # only consider GPT-4o
             from prompts.plan.reflect_after_eval_no_meta_reward import Reflexion_after_eval_prompt
-        elif global_no_decompose:
+        elif no_decompose:
             from prompts.plan.reflect_after_eval_no_decompose import Reflexion_after_eval_prompt
         else:
-            if global_format_choice == 'json':
+            if format_choice == 'json':
                 from prompts.plan.reflect_after_eval import Reflexion_after_eval_prompt
-            elif global_format_choice == 'xml':
+            elif format_choice == 'xml':
                 from prompts.plan.reflect_after_eval_xml import Reflexion_after_eval_prompt
             else:
                 raise NotImplementedError

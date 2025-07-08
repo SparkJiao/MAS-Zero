@@ -1,72 +1,18 @@
-import base64
+import json
+import re
 import time
+from collections import OrderedDict
 from typing import Any
 
 import openai
-from openai import OpenAI
-
-from dataclasses import dataclass, field
-from typing import Any
 from together import Together
-from utils import extract_xml
-import re
-import json
-from collections import OrderedDict
-import os
+
 from shared_vars import get_global
-import re
+from utils import extract_xml
+from .sampler_base import SamplerBase
 
 Message = dict[str, Any]  # keys role, content
 MessageList = list[Message]
-
-
-class SamplerBase:
-    """
-    Base class for defining a sampling model, which can be evaluated,
-    or used as part of the grading process.
-    """
-
-    def __call__(self, message_list: MessageList) -> str:
-        raise NotImplementedError
-
-
-@dataclass
-class EvalResult:
-    """
-    Result of running an evaluation (usually consisting of many samples)
-    """
-
-    score: float | None  # top-line metric
-    metrics: dict[str, float] | None  # other metrics
-    htmls: list[str]  # strings of valid HTML
-    convos: list[MessageList]  # sampled conversations
-
-
-@dataclass
-class SingleEvalResult:
-    """
-    Result of evaluating a single sample
-    """
-
-    score: float | None
-    metrics: dict[str, float] = field(default_factory=dict)
-    html: str | None = None
-    convo: MessageList | None = None  # sampled conversation
-
-
-class Eval:
-    """
-    Base class for defining an evaluation.
-    """
-
-    def __call__(self, sampler: SamplerBase) -> EvalResult:
-        raise NotImplementedError
-
-OPENAI_SYSTEM_MESSAGE_API = "You are a helpful assistant."
-OPENAI_SYSTEM_MESSAGE_CHATGPT = (
-    "You are ChatGPT, a large language model trained by OpenAI, based on the GPT-4 architecture."
-    + "\nKnowledge cutoff: 2023-12\nCurrent date: 2024-04-01"
-)
 
 
 class ChatCompletionSampler(SamplerBase):
@@ -75,11 +21,11 @@ class ChatCompletionSampler(SamplerBase):
     """
 
     def __init__(
-        self,
-        system_message: str | None = None,
-        temperature: float = 0.5,
-        model: str | None = None,
-        # max_tokens: int = 1024,
+            self,
+            system_message: str | None = None,
+            temperature: float = 0.5,
+            model: str | None = None,
+            # max_tokens: int = 1024,
     ):
         try:
             self.api_key_name = "OPENAI_API_KEY"
@@ -106,7 +52,7 @@ class ChatCompletionSampler(SamplerBase):
             if all(t not in tag for t in ['A', 'B', 'C', 'D', 'sub', 'S_y', 'TOO_HARD']) and tag not in ['a', 'script', 'rst_prolog', 'generated', 'format']:
                 tag_text = extract_xml(ori_answer, tag)
                 output_dict[tag] = tag_text
-        print('output_dict: ',output_dict.keys())
+        print('output_dict: ', output_dict.keys())
 
         json_string = json.dumps(output_dict, indent=4)
         return json_string
@@ -126,20 +72,20 @@ class ChatCompletionSampler(SamplerBase):
 
                 if global_format_choice == 'json':
                     response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=message_list,
-                    temperature= temperature if temperature is not None else self.temperature,              
-                    response_format={"type": "json_object"}
-                    )               
+                        model=self.model,
+                        messages=message_list,
+                        temperature=temperature if temperature is not None else self.temperature,
+                        response_format={"type": "json_object"}
+                    )
                     json_string = response.choices[0].message.content
 
                 elif global_format_choice == 'xml':
                     response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=message_list,
-                    temperature= temperature if temperature is not None else self.temperature,              
-                    min_tokens=3000,
-                    )        
+                        model=self.model,
+                        messages=message_list,
+                        temperature=temperature if temperature is not None else self.temperature,
+                        min_tokens=3000,
+                    )
                     ori_answer = response.choices[0].message.content
                     # print('ori_answer: ',ori_answer)
                     json_string = self.xml_to_json(ori_answer)
@@ -156,14 +102,14 @@ class ChatCompletionSampler(SamplerBase):
                 print("Bad Request Error", e)
                 return ""
             except Exception as e:
-                exception_backoff = 2**trial  # expontial back off
+                exception_backoff = 2 ** trial  # expontial back off
                 print(
                     f"Together AI: Rate limit exception so wait and retry {trial} after {exception_backoff} sec",
                     e,
                 )
                 time.sleep(exception_backoff)
                 trial += 1
-                if trial == 3: # basically mean it is bad request after 3 trials
+                if trial == 3:  # basically mean it is bad request after 3 trials
                     print("Bad Request Error", e)
                     return ""
             # unknown error shall throw exception
