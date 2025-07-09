@@ -196,7 +196,7 @@ def run_self_verifier(post_process_path, log_path, score_path, responses, sample
             {"role": "user", "content": 
             f'Given the problem and a list of candidate thinking steps and the final answers, do not solve the task yourself but look carefully at the reasoning steps and final answer, select the best answer among the candidates. In the "thinking" entry, compare the selected answer with all other unselected answer one-by-one, identify the erroneous steps in the unselected answer and give detailed explanation on why it is incorrect. In the "selection" entry, gives the best answer id \n\n Problem: \n {problem} \n\n Answer List: {answer_list}'},
         ]
-    elif 'qwen' in post_process_path or 'llama' in post_process_path:
+    elif 'qwen' in post_process_path or 'llama' in post_process_path or 'deepseek':
         FORMAT_INST = lambda request_keys: f"""Reply EXACTLY with the following XML format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n"""
         output_description = "Return ONLY the integer selection id. DO NOT return anything the id."
         output_fields_and_description = '\n'.join([f"<{key}> [Your {key}.] </{key}>" if not 'selection' in key else f"<{key}> [Your {key}. {output_description}] </{key}>\n" for key in ['thinking', 'selection']])
