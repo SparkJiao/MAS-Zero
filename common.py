@@ -470,11 +470,15 @@ def get_init_archive(blocks):
 
 
 def get_init_archive_local(blocks, extra_info):
+    from blocks.async_cot import COT
+    from blocks.async_cot_sc import COT_SC
+    from blocks.async_llm_debate import LLM_debate
+
     global_format_choice = extra_info["format_choice"]
     if global_format_choice == 'json':
-        from blocks.reflexion import Reflexion
+        from blocks.async_reflexion import Reflexion
     elif global_format_choice == 'xml':
-        from blocks.reflexion_xml import Reflexion
+        from blocks.async_reflexion_xml import Reflexion
     else:
         raise NotImplementedError
 

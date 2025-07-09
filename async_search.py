@@ -208,7 +208,7 @@ async def evaluate_forward_fn(extra_info, forward_str):
     # dynamically define forward()
     # modified from https://github.com/luchris429/DiscoPOP/blob/main/scripts/launch_evo.py
 
-    print('forward_str: ', forward_str)
+    # print('forward_str: ', forward_str)
 
     # if you want debug, remove the section so that you can see the detailed error line
     namespace = {}
@@ -225,17 +225,6 @@ async def evaluate_forward_fn(extra_info, forward_str):
     func = namespace[names[0]]
     if not callable(func):
         raise AssertionError(f"{func} is not callable")
-    # setattr(AgentSystem, "forward", func)
-
-    # 如果 forward_str 里写的是同步函数，包装成异步
-    # if not inspect.iscoroutinefunction(func):
-    #     async def _async_wrapper(self, *a, **kw):
-    #         return await asyncio.to_thread(func, self, *a, **kw)
-    #
-    #     forward = _async_wrapper
-    # else:
-    #     async def forward(self, *args, **kwargs):
-    #         return await func(self, *args, **kwargs)
 
     agent_system = AgentSystem()
     # Assign the function to this instance only without affecting other instances across threads
@@ -383,101 +372,107 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
     use_oracle_verifier = extra_info["use_oracle_verifier"]
     example_id = extra_info["example_id"]
 
-    # global_ns = []
+    global_ns = []
     # Temporarily disable the initial archive evaluation
-    # for solution_i, solution in enumerate(cur_archive):
-    #
-    #     if 'fitness' in solution:
-    #         continue
-    #
-    #     solution["generation"] = "initial"
-    #     print(f'============Initial Archive: {solution["name"]}=================')
-    #
-    #     if solution["name"] in global_ns:  # TODO: separate it
-    #         extra_info["n"] = f'{solution["name"]}_{solution_i}'
-    #     else:
-    #         extra_info["n"] = solution["name"]
-    #
-    #     global_n = extra_info["global_n"]
-    #     global_ns.append(global_n)
-    #
-    #     # print(solution["code"])
-    #     acc_oracle_verifier_list, acc_model_verifier_list, results, _, _, final_response = await evaluate_forward_fn(args, extra_info, solution["code"])
-    #
-    #     # TODO: can we somehow also log acc_oracle_verifier_list so that we can know how accurate acc_model_verifier_list is?
-    #     if global_use_oracle_verifier:
-    #         acc_list = acc_oracle_verifier_list
-    #     else:
-    #         acc_list = acc_model_verifier_list
-    #
-    #     if args.defer_verifier:
-    #         fitness_str = bootstrap_confidence_interval([0.0])
-    #         solution["acc"] = np.mean([0.0])
-    #
-    #     else:
-    #         fitness_str = bootstrap_confidence_interval(acc_list)
-    #         solution["acc"] = np.mean(acc_list)
-    #
-    #     solution["fitness"] = fitness_str
-    #     solution["total_cost"] = extra_info["global_COST_TOTAL"]
-    #
-    #     print(f"acc_list:", acc_list)
-    #     print(f"mean acc_list:", np.mean(acc_list))
-    #     print(f"bootstrap_confidence_interval: {fitness_str}")
-    #
-    #     if 'swe_bench' in args.dataset:
-    #         extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
-    #         if '<patch>' in extracted_answer:
-    #             extracted_answer = extract_xml(extracted_answer, 'patch').strip()
-    #     else:
-    #         extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
-    #
-    #     if '[TOO_HARD]' in extracted_answer:  # we cannot add [TOO_HARD] in memory
-    #         extracted_answer = extracted_answer[:extracted_answer.index('[TOO_HARD]')]
-    #     memory.append({extracted_answer: fitness_str})
-    #     print(f'save json to {mem_path}')
-    #     with open(mem_path, 'w') as json_file:
-    #         json.dump(memory, json_file, indent=4)
-    #
-    #     # save results
-    #     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    #     print(f'save json to {file_path}')
-    #     with open(file_path, 'w') as json_file:
-    #         json.dump(cur_archive, json_file, indent=4)
-    #
-    #     report_filename = os.path.join(args.save_dir, f'{args.expr_name}_{solution["name"]}_{args.option}_debug.html')
-    #     print(f"Writing report to {report_filename}")
-    #     with open(report_filename, "w") as fh:
-    #         fh.write(common.make_report(results))
-    #     metrics = results.metrics | {"score": results.score}
-    #     print('metrics: ', metrics)
-    #     print(f"COST_TOTAL:", extra_info["global_COST_TOTAL"])
-    #
-    #     with open(oracle_acc_result_path, "a+") as fh:
-    #         fh.write(
-    #             f'experiment {example_id}: 1 (initial {solution["name"]}): acc_oracle_verifier_list: {acc_oracle_verifier_list} '
-    #             f'acc_model_verifier_list: {acc_model_verifier_list}\n')
-    #
-    #     if not args.defer_verifier:
-    #         if np.mean(acc_list) == 1:
-    #             if global_use_oracle_verifier:
-    #                 with open(result_path, "a+") as fh:
-    #                     fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
-    #
-    #             else:
-    #                 # check with the real answer to decide whether to mark as correct
-    #                 if np.mean(acc_oracle_verifier_list) == 1:  #
-    #                     with open(result_path, "a+") as fh:
-    #                         fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
-    #
-    #             # even the judge is incorrect, we still stop because have to listen to the judge
-    #             n_generation = 0  # no need
-    #             start = 0  # no need
-    #             print(f'write to {result_path}. break')
-    #             break
-    #
-    #         if acc_oracle_verifier_list[0] == 1:
-    #             exit()  # debug
+    for solution_i, solution in enumerate(cur_archive):
+
+        if 'fitness' in solution:
+            continue
+
+        solution["generation"] = "initial"
+        print(f'============Initial Archive: {solution["name"]}=================')
+
+        if solution["name"] in global_ns:  # TODO: separate it
+            extra_info["n"] = f'{solution["name"]}_{solution_i}'
+        else:
+            extra_info["n"] = solution["name"]
+
+        global_n = extra_info["n"]
+        global_ns.append(global_n)
+
+        # print(solution["code"])
+        try:
+            acc_oracle_verifier_list, acc_model_verifier_list, results, _, _, final_response = await evaluate_forward_fn(extra_info, solution["code"])
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(solution['code'])
+            continue
+
+        # TODO: can we somehow also log acc_oracle_verifier_list so that we can know how accurate acc_model_verifier_list is?
+        if use_oracle_verifier:
+            acc_list = acc_oracle_verifier_list
+        else:
+            acc_list = acc_model_verifier_list
+
+        if defer_verifier:
+            fitness_str = bootstrap_confidence_interval([0.0])
+            solution["acc"] = np.mean([0.0])
+
+        else:
+            fitness_str = bootstrap_confidence_interval(acc_list)
+            solution["acc"] = np.mean(acc_list)
+
+        solution["fitness"] = fitness_str
+        solution["total_cost"] = extra_info["COST_TOTAL"]
+
+        print(f"acc_list:", acc_list)
+        print(f"mean acc_list:", np.mean(acc_list))
+        print(f"bootstrap_confidence_interval: {fitness_str}")
+
+        if 'swe_bench' in dataset:
+            extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
+            if '<patch>' in extracted_answer:
+                extracted_answer = extract_xml(extracted_answer, 'patch').strip()
+        else:
+            extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
+
+        if '[TOO_HARD]' in extracted_answer:  # we cannot add [TOO_HARD] in memory
+            extracted_answer = extracted_answer[:extracted_answer.index('[TOO_HARD]')]
+        memory.append({extracted_answer: fitness_str})
+        print(f'save json to {mem_path}')
+        with open(mem_path, 'w') as json_file:
+            json.dump(memory, json_file, indent=4)
+
+        # save results
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        print(f'save json to {file_path}')
+        with open(file_path, 'w') as json_file:
+            json.dump(cur_archive, json_file, indent=4)
+
+        report_filename = os.path.join(save_dir, f'{expr_name}_{solution["name"]}_{option}_debug.html')
+        print(f"Writing report to {report_filename}")
+        with open(report_filename, "w") as fh:
+            fh.write(common.make_report(results))
+        metrics = results.metrics | {"score": results.score}
+        print('metrics: ', metrics)
+        print(f"COST_TOTAL:", extra_info["COST_TOTAL"])
+
+        with open(oracle_acc_result_path, "a+") as fh:
+            fh.write(
+                f'experiment {example_id}: 1 (initial {solution["name"]}): acc_oracle_verifier_list: {acc_oracle_verifier_list} '
+                f'acc_model_verifier_list: {acc_model_verifier_list}\n')
+
+        if not defer_verifier:
+            if np.mean(acc_list) == 1:
+                if use_oracle_verifier:
+                    with open(result_path, "a+") as fh:
+                        fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
+
+                else:
+                    # check with the real answer to decide whether to mark as correct
+                    if np.mean(acc_oracle_verifier_list) == 1:  #
+                        with open(result_path, "a+") as fh:
+                            fh.write(f'experiment {example_id}: 1 (initial {solution["name"]})\n')
+
+                # even the judge is incorrect, we still stop because have to listen to the judge
+                n_generation = 0  # no need
+                start = 0  # no need
+                print(f'write to {result_path}. break')
+                break
+
+            if acc_oracle_verifier_list[0] == 1:
+                exit()  # debug
     # exit()
 
     task_queue = extra_info["task_queue"]

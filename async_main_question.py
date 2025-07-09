@@ -253,6 +253,9 @@ async def main(args):
                     blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
                 ))
 
+                # if len(tasks) >= 1:
+                #     break
+
             await tqdm_asyncio.gather(*tasks)
 
 

@@ -23,7 +23,7 @@ def init_model(name: str):
     global AVAILABLE_MODELS
     if name in AVAILABLE_MODELS:
         return
-    AVAILABLE_MODELS[name] = model_init_map[name](max_tokens=16384)
+    AVAILABLE_MODELS[name] = model_init_map[name](max_tokens=4096)
 
 
 def get_model(name):
