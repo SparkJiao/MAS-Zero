@@ -484,14 +484,15 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         print(f"============Generation {n + 1}=================")
         extra_info["n"] = n
 
-        # if n == 0:  # initial propose
-        #     system_prompt, prompt = get_prompt_local(cur_archive, extra_info, option=args.option, task_queue=task_queue)
-        #     msg_list = [
-        #         {"role": "system", "content": system_prompt},
-        #         {"role": "user", "content": prompt},
-        #     ]
-        #
-        #     next_solution = get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
+        if n == 0:  # initial propose
+            system_prompt, prompt = get_prompt_local(cur_archive, format_choice, extra_info["no_decompose"], extra_info["no_meta_reward"],
+                                                     option=option, task_queue=task_queue)
+            msg_list = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+
+            next_solution = get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
 
         if os.path.exists(msg_path):
             print(f'load msg_list from {msg_path}')

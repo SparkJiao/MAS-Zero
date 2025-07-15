@@ -190,7 +190,7 @@ async def main(args):
                     task_queue.append(taskInfo)
 
                 extra_info["output_description"] = output_description
-                extra_info["score_compute"] = data_scorer.score
+                # extra_info["score_compute"] = data_scorer.score
                 extra_info["max_round"] = max_round
                 extra_info["max_sc"] = max_sc
                 extra_info["debate_role"] = debate_role
@@ -234,7 +234,7 @@ async def main(args):
             extra_info["code_snippet"] = code_snippet
 
             # 控制并发数量的信号量，最多同时运行5个任务
-            semaphore = asyncio.Semaphore(32)
+            semaphore = asyncio.Semaphore(args.max_workers)
 
             async def run_task_with_semaphore(*a, **kw):
                 async with semaphore:
@@ -256,8 +256,8 @@ async def main(args):
                 # if len(tasks) >= 1:
                 #     break
 
+            print(len(tasks))
             await tqdm_asyncio.gather(*tasks)
-
 
         elif 'gpqa_diamond' in args.dataset:
 
@@ -298,7 +298,7 @@ async def main(args):
                     final_question.append(task_content)
 
                 extra_info["output_description"] = output_description
-                extra_info["score_compute"] = data_scorer.score
+                # extra_info["score_compute"] = data_scorer.score
                 extra_info["max_round"] = max_round
                 extra_info["max_sc"] = max_sc
                 extra_info["debate_role"] = debate_role
@@ -315,7 +315,6 @@ async def main(args):
 
                 # search
                 search.search(args, extra_info, task_queue, meta_model, blocks, verifier_model)
-
 
         else:
             raise NotImplementedError
