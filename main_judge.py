@@ -137,6 +137,7 @@ parser.add_argument('--max_response_per_sample', type=int)
 parser.add_argument('--model', type=str, default="gpt-4o_chatgpt")
 parser.add_argument('--majority_vote', action='store_true')
 parser.add_argument("--save_dir", type=str, default="results")
+parser.add_argument("--option", type=str, default="plan")
 args = parser.parse_args()
 
 if __name__ == "__main__":
@@ -202,7 +203,7 @@ if __name__ == "__main__":
 
         print(f'-------- example_id {example_id} --------')
 
-        response_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_plan_response'
+        response_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_{args.option}_response'
         # reponse_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0__reponse' #sometimes miss "plan"
 
         try:
@@ -268,7 +269,7 @@ if __name__ == "__main__":
         elif judge_method == 'external':
             from llm_judge import prm
 
-            post_process_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_plan_post_process.json'
+            post_process_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_{args.option}_post_process.json'
             print('post_process_path: ', post_process_path)
 
             try:
@@ -294,9 +295,9 @@ if __name__ == "__main__":
         if judge_method == 'self':
             # TODO: consider a list-wise judge
 
-            post_process_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_plan_sub_task_post_process.json'
-            log_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_plan_sub_self_verifier_log'
-            score_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_plan_score.json'
+            post_process_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_{args.option}_sub_task_post_process.json'
+            log_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_{args.option}_sub_self_verifier_log'
+            score_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_{args.option}_score.json'
 
             chosen_id = self_verifier_list_wise.run_self_verifier(post_process_path, log_path, score_path, responses, sampler, post_processer,
                                                                   extracted_answers, dataset, max_response_per_sample, majority_vote)

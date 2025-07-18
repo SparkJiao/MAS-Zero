@@ -543,7 +543,7 @@ def import_based_on_option_local(option, no_decompose: bool, no_meta_reward: boo
         from prompts.cot_sc.init_propose import base, EXAMPLE
         from prompts.cot_sc.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
 
-    elif option == 'plan':
+    elif option in ['plan', 'plan_sub_mem']:
         if no_decompose:
             from prompts.plan.propose_no_decompose import base, EXAMPLE
         elif no_meta_reward:
@@ -652,7 +652,15 @@ def get_reflexion_after_eval_local(option, format_choice, no_decompose, no_meta_
                 from prompts.plan.reflect_after_eval_xml import Reflexion_after_eval_prompt
             else:
                 raise NotImplementedError
-
+    elif option == 'plan_sub_mem':
+        if no_meta_reward or no_decompose:
+            raise NotImplementedError
+        if format_choice == 'json':
+            from prompts.plan.reflect_after_eval import Reflexion_after_eval_prompt_sub_memory as Reflexion_after_eval_prompt
+        elif format_choice == 'xml':
+            from prompts.plan.reflect_after_eval_xml import Reflexion_after_eval_prompt_sub_memory as Reflexion_after_eval_prompt
+        else:
+            raise NotImplementedError
     else:
         raise NotImplementedError
 

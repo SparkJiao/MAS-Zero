@@ -88,6 +88,35 @@ async def run_aime_search(example, example_id, meta_model, node_model, verifier_
                         save_dir, expr_name, option, dataset, defer_verifier, debug_max)
 
 
+async def run_gpqa_search(example, example_id, meta_model, node_model, verifier_model, n, dataset, extra_info,
+                          blocks, n_generation, save_dir, option, defer_verifier, debug_max):
+    expr_name = f'question/meta_agent/{dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
+    # print('args.expr_name: ', args.expr_name)
+
+    questions = [example['problem']]
+    answers = [example['answer']]
+
+    final_question = []
+    task_queue = []
+    for q in questions:
+        task_content = f"What is the correct answer to this question: {q.question}" \
+                       + f"\n\nChoices:\n(A) {q.choice1}\n(B) {q.choice2}\n(C) {q.choice3}\n(D) {q.choice4}"
+        taskInfo = ('task', 'User', task_content, None, None, None, -1)
+        task_queue.append(taskInfo)
+        final_question.append(task_content)
+
+    # extra_info["score_compute"] = data_scorer.score
+    extra_info["answers"] = answers
+    extra_info["questions"] = final_question  # 注意：此处原始代码使用了 final_question 变量
+    extra_info["example_id"] = example_id
+    extra_info["response_dict"] = []
+    extra_info["instance_id"] = example_id
+
+    # search
+    await search.search(extra_info, task_queue, meta_model, blocks, verifier_model, n_generation,
+                        save_dir, expr_name, option, dataset, defer_verifier, debug_max)
+
+
 async def main(args):
     blocks = args.blocks
     meta_model = args.meta_model
@@ -140,7 +169,6 @@ async def main(args):
 
     code_snippet = None
     for n in range(args.n_repeats):
-
         if 'swe_bench' in args.dataset:
 
             cot_instruction = "Put your thinking process in the 'thinking' entry and the final patch in the 'answer' entry."  # TODO: may need something for xml
@@ -207,9 +235,7 @@ async def main(args):
 
                 # search
                 await search.search(args, extra_info, task_queue, meta_model, blocks, verifier_model)
-
         elif 'aime24' in args.dataset:
-
             cot_instruction = "Please think step by step and then solve the task."
             # output_description = "Return ONLY an integer. DO NOT return anything other than the integer answer."
             output_description = (
@@ -260,7 +286,6 @@ async def main(args):
             await tqdm_asyncio.gather(*tasks)
 
         elif 'gpqa_diamond' in args.dataset:
-
             cot_instruction = "Please think step by step and then solve the task."
             # output_description = "Return ONLY the alphabet choice, i.e. A or B or C or D."
             output_description = ("If the question is asked for a multiple-choice result, Return ONLY the alphabet choice, i.e. A or B or C or D; "
@@ -274,48 +299,38 @@ async def main(args):
             answers = [question.correct_index for question in questions]
 
             examples = [{'problem': questions[i], 'answer': answers[i]} for i in range(len(questions))]
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["node_model"] = node_model
+            extra_info["verifier_model"] = verifier_model
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["output_description"] = output_description
+            extra_info["dataset"] = args.dataset
+            extra_info["code_snippet"] = code_snippet
 
+            # 控制并发数量的信号量，最多同时运行5个任务
+            semaphore = asyncio.Semaphore(args.max_workers)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_gpqa_search(*a, **kw)
+
+            tasks = []
             for example_id, example in enumerate(examples):
-                instance_id = example_id
-
                 if args.given_examples:
                     if example_id not in args.given_examples:
                         continue
 
-                args.expr_name = f'question/meta_agent/{args.dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
-                print('args.expr_name: ', args.expr_name)
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
 
-                questions = [example['problem']]
-                answers = [example['answer']]
-
-                final_question = []
-                task_queue = []
-                for q in questions:
-                    task_content = f"What is the correct answer to this question: {q.question}" \
-                                   + f"\n\nChoices:\n(A) {q.choice1}\n(B) {q.choice2}\n(C) {q.choice3}\n(D) {q.choice4}"
-                    taskInfo = ('task', 'User', task_content, None, None, None, -1)
-                    task_queue.append(taskInfo)
-                    final_question.append(task_content)
-
-                extra_info["output_description"] = output_description
-                # extra_info["score_compute"] = data_scorer.score
-                extra_info["max_round"] = max_round
-                extra_info["max_sc"] = max_sc
-                extra_info["debate_role"] = debate_role
-                extra_info["cot_instruction"] = cot_instruction
-                extra_info["node_model"] = node_model
-                extra_info["answers"] = answers
-                extra_info["questions"] = final_question  # 注意：此处原始代码使用了 final_question 变量
-                extra_info["use_oracle_verifier"] = use_oracle_verifier
-                extra_info["example_id"] = example_id
-                extra_info["response_dict"] = []
-                extra_info["dataset"] = args.dataset
-                extra_info["instance_id"] = instance_id
-                extra_info["code_snippet"] = code_snippet
-
-                # search
-                search.search(args, extra_info, task_queue, meta_model, blocks, verifier_model)
-
+            print(len(tasks))
+            await tqdm_asyncio.gather(*tasks)
         else:
             raise NotImplementedError
 

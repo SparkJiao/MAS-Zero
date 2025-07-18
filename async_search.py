@@ -244,12 +244,12 @@ async def evaluate_forward_fn(extra_info, forward_str):
     agent_system.example_id = extra_info["example_id"]
     agent_system.instance_id = extra_info["instance_id"]
 
-    # tasks = [agent_system.forward(item) for item in task_queue]
-    # results = await tqdm_asyncio.gather(*tasks, desc="Evaluating forward function", total=len(tasks))
-    results = []
-    for item in tqdm(task_queue, desc="Evaluating forward function", total=len(task_queue)):
-        res = await agent_system.forward(item, extra_info)
-        results.append(res)
+    tasks = [agent_system.forward(item, extra_info) for item in task_queue]
+    results = await tqdm_asyncio.gather(*tasks, desc="Evaluating forward function", total=len(tasks))
+    # results = []
+    # for item in tqdm(task_queue, desc="Evaluating forward function", total=len(task_queue)):
+    #     res = await agent_system.forward(item, extra_info)
+    #     results.append(res)
 
     prompt_messages = [res.prompt for q_idx, res in enumerate(results)]
     response_texts = [str(res.content) for q_idx, res in enumerate(results)]
@@ -262,9 +262,9 @@ async def evaluate_forward_fn(extra_info, forward_str):
 
     agents = [res.agents for q_idx, res in enumerate(results)]
 
-    print('response_texts: ', response_texts[0])
-    print('gold answers: ', answers[0])
-    print('length: ', len(response_texts), len(answers))
+    # print('response_texts: ', response_texts[0])
+    # print('gold answers: ', answers[0])
+    # print('length: ', len(response_texts), len(answers))
 
     example_id = extra_info["example_id"]
     n = extra_info["n"]
@@ -327,8 +327,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
     msg_path = os.path.join(save_dir, f"{expr_name}_{option}_msg.json")
     mem_path = os.path.join(save_dir, f"{expr_name}_{option}_mem.json")
     file_path = os.path.join(save_dir, f"{expr_name}_{option}_archive.json")
-    result_path = f'./async_results/question/meta_agent/{dataset}/{meta_model}_{node_model}_{verifier_model}.results'
-    oracle_acc_result_path = f'./async_results/question/meta_agent/{dataset}/{meta_model}_{node_model}_oracle.results'
+    result_path = f'./{save_dir}/question/meta_agent/{dataset}/{meta_model}_{node_model}_{verifier_model}.results'
+    oracle_acc_result_path = f'./{save_dir}/question/meta_agent/{dataset}/{meta_model}_{node_model}_oracle.results'
     judge_path = os.path.join(save_dir, f"{expr_name}_{option}_judge")
     response_path = os.path.join(save_dir, f"{expr_name}_{option}_response")
     os.makedirs(os.path.dirname(judge_path), exist_ok=True)
@@ -492,7 +492,7 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
                 {"role": "user", "content": prompt},
             ]
 
-            next_solution = get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
+            next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
 
         if os.path.exists(msg_path):
             print(f'load msg_list from {msg_path}')
