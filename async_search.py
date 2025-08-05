@@ -169,12 +169,22 @@ class LLMAgentBase:
         for key, value in response_json.items():
             info = Info(key, self.__repr__(), value, prompt, None, None, iteration_idx)
             output_infos.append(info)
+
+        if isinstance(extra_info['n'], int):
+            if f'round_{extra_info["n"] + 1}' not in extra_info:
+                extra_info[f'round_{extra_info["n"] + 1}'] = []
+            extra_info[f'round_{extra_info["n"] + 1}'].append(output_infos)
+
         return output_infos
 
     def __repr__(self):
         return f"{self.agent_name} {self.id}"
 
     async def __call__(self, input_infos: list, extra_info, instruction, iteration_idx=-1, is_sub_task=False):
+        if isinstance(extra_info['n'], int):
+            if f'round_{extra_info["n"] + 1}_call' not in extra_info:
+                extra_info[f'round_{extra_info["n"] + 1}_call'] = 0
+            extra_info[f'round_{extra_info["n"] + 1}_call'] += 1
         return await self.query(input_infos, extra_info, instruction, iteration_idx=iteration_idx, is_sub_task=is_sub_task)
 
 
@@ -373,7 +383,6 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
     example_id = extra_info["example_id"]
 
     global_ns = []
-    # Temporarily disable the initial archive evaluation
     for solution_i, solution in enumerate(cur_archive):
 
         if 'fitness' in solution:
@@ -735,3 +744,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         if not defer_verifier:
             if acc_oracle_verifier_list[0] == 1:
                 exit()  # debug
+
+        if extra_info["early_stop"]:
+            if f"round_{n + 1}_call" not in extra_info or extra_info[f"round_{n + 1}_call"] == 0:
+                # No call this round. Exit.
+                break

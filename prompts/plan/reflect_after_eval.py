@@ -127,3 +127,94 @@ This is WRONG
 This is wrong becuse single qupte is used (Maxwell's) within the sting but single quote is used again for the f-string (f''). This will casue unterminated string error. To correct it, one should use double quote for f-stirng, i.e., `f"CoT-SC agent ABC, on the purpose of determining changes to Maxwell's"`
 """
 
+
+Reflexion_after_eval_prompt_dynamic_memory = """
+Carefully review the following items produced in the previous round:
+- the proposed architecture (\"code\")
+- each sub‑task answer (\"sub_tasks\")
+- each agent answer (\"agents\")
+- the final response (\"final_response\") and its fitness score (\"fitness\")
+- the historical memory of past final answers and fitness scores (\"memory\")
+
+Your job in this *reflection* turn is to:
+
+**(1) Summarize**  
+Provide a concise summary of the main reasoning steps taken by all agents in the previous round.
+
+**(2) Keep**  
+List every sub‑task whose answer is already correct or otherwise adequate.  For each, state “⭑ keep” and briefly justify why it needs no further work.
+
+**(3) Diagnose & Plan**  
+For every remaining sub‑task:  
+&nbsp;&nbsp;• Decide whether it merely needs a *prompt/agent tweak* **or** requires *further decomposition* into simpler pieces.  
+&nbsp;&nbsp;• Explain *why* (e.g., answer incorrect, `[TOO_HARD]`, agent malfunction, missing info, etc.).  
+If decomposition is needed, outline the new, smaller sub‑tasks and show how they connect to solved ones.
+
+**(4) Rewrite sub‑agent prompts**  
+Draft fresh prompts **only** for the sub‑tasks that still need work (those identified in step 3).  
+Make sure each prompt:  
+  – references any prerequisite information it needs (e.g., “Based on the output of sub‑task i …”).  
+  – is specific, self‑contained, and avoids giving direct answers or forbidden shortcuts.  
+  – instructs the agent to avoid known wrong answers listed in \"memory\" when relevant.
+
+---
+
+### Required output format
+
+Your response should add new entries to the previous answers:
+
+"reflection": 
+(1) Provide your thoughts on the Solvable, Completeness and Fitness of the architecture and/or task decomposition (which sub-tasks are incorrect? which agent in which block are malfunctional?)
+(2) identify any inappropriate in the implementation, and suggest improvements (why the improvements can lead to a better final answer? Explain in detail)
+
+"thought": Revise your previous proposal or propose a new architecture if necessary, using the same format as the example response. 
+
+For case (a), Give the 
+
+(1) **Further Decomposition**: Compare to your previous decomposition attempts in the Discovered architecture archive (see the 'thought' entries), how do you futher decompose the questions? please give details by the following format: 'last sub-task 1 -> (further decompose to) new sub-task 2, new sub-task 3..., new sub-task n)' Give detail compare and justify how the new sub-tasks are eaiser than the old one. Do not give answer or short-cut (an example for shot-cut: 'output exactly the following:..', which is not allowed) in the sub-task instruction in any format, but only do the planing. Justify (1) why the new sub-tasks are sovlable and (2) how the sub-tasks can achieve the final answer to the original question.
+
+
+For case (b), Give the 
+
+(2) **Improved subtask architecture**: Compare to your last block attempts in the history (last answer), which sub-task architecture need to be improved? How do you futher connecting them in a different ways so that the resultsing subtask architeture is able to solve the corresponding sub-task? please give details by the following format: 'last sub-task architeture (what architecute was it?) (aims to address sub-task i)-> (improve to) new sub-task architeture (what is the main difference?)' Give detail compare and justify how the new connection is improved than the old one. Note that the new connection still follow the rules that you need need to determine the number of layers as well as the connection, but do not propose new blocks or modify existing ones in the sub-task architecture, and just changes the connection among the block, but block setting like instruction, tempreture are allowed to modify
+
+For case where the final response is not updated and still the same mistaken answer, Give the
+
+(3) **Updated Subtask Instruction**. Read the 'memory' entry, improve the sub-task instruction so that it can know explicitly that some answers should be avoided. For example, you can add `It is known that (wrong answers, include all wrong answers from the 'memeory', i.e., all final answer with 0 fitness score) is not correct` to the last sub-task so that the sub-architecture knows it needs to avoid it.
+
+
+"name": Provide a name for the revised or new architecture. (Don't put words like "new" or "improved" in the name.)
+
+"code": Update the code entry based on your reflection and thought. 
+
+For those sub-tasks that have already been resolved, please directly re-use the previous results from `extra_info` instead of re-sending the same sub-task instruction.
+
+The relevant code for saving the previous results is as below:
+
+```python
+        if f'round_{extra_info["n"]}' not in extra_info:
+            extra_info[f'round_{extra_info["n"]}'] = []
+        extra_info[f'round_{extra_info["n"]}'].append(output_infos)
+```
+
+For example, if you want get the results of the first agent in last round (supposing current round is No. 2), you can simply use:
+```python
+thinking1, answer1 = extra_info['round_1'][0]
+```
+When re-using the results from previous round, please remember to saving the results for current round immediately when you have accessed it:
+```python
+thinking1, answer1 = extra_info['round_1'][0]
+if 'round_2' not in extra_info:
+    extra_info['round_2'] = []
+extra_info['round_2'].append([thinking1, answer1])
+```
+While for new sub-tasks, the saving process will be triggered inside the sub-agent, and you do not need to manually save it.
+
+For those requiring adjustment, reflect the simplified question and improved task instruction in the new prompt.
+
+Make sure you actually implement all the improvements mentioned in the reflection and thoughts and improvement in this code. Make sure only return the final answer, i.e., the output of self.make_final_answer. All the requirement on code still valid: You must write a COMPLETE CODE in "code": Your code will be part of the entire project (so do not implement any other part), so please implement complete, reliable, reusable code snippets. Do not make any syntactic mistakes. For example. 
+if single quote (') is used in string, then double quote (") should be used for the whole string.
+Return only this JSON structure.
+
+Be concise and precise; your goal is to maximise the next round’s fitness by focusing effort solely on the unresolved pieces.
+"""

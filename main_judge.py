@@ -325,7 +325,7 @@ if __name__ == "__main__":
         print('special_id: ', special_id)
 
     acc = sum(correct_example) / len(correct_example)
-    print(f'coorect {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}')
+    print(f'correct {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}')
 
     with open(result_path, "a+") as fh:
-        fh.write(f'coorect {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}\n')
+        fh.write(f'correct {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}\n')

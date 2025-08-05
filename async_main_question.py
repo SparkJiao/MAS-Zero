@@ -59,6 +59,7 @@ def parse_arguments():
     parser.add_argument(
         "--no_meta_reward", action='store_true'
     )
+    parser.add_argument("--early_stop", action='store_true', default=False)
     args = parser.parse_args()
 
     return args
@@ -232,6 +233,7 @@ async def main(args):
                 extra_info["dataset"] = args.dataset
                 extra_info["instance_id"] = instance_id
                 extra_info["code_snippet"] = code_snippet
+                extra_info["early_stop"] = args.early_stop
 
                 # search
                 await search.search(args, extra_info, task_queue, meta_model, blocks, verifier_model)
@@ -258,6 +260,7 @@ async def main(args):
             extra_info["use_oracle_verifier"] = use_oracle_verifier
             extra_info["dataset"] = args.dataset
             extra_info["code_snippet"] = code_snippet
+            extra_info["early_stop"] = args.early_stop
 
             # 控制并发数量的信号量，最多同时运行5个任务
             semaphore = asyncio.Semaphore(args.max_workers)
@@ -309,6 +312,7 @@ async def main(args):
             extra_info["output_description"] = output_description
             extra_info["dataset"] = args.dataset
             extra_info["code_snippet"] = code_snippet
+            extra_info["early_stop"] = args.early_stop
 
             # 控制并发数量的信号量，最多同时运行5个任务
             semaphore = asyncio.Semaphore(args.max_workers)

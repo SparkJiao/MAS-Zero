@@ -283,6 +283,11 @@ class LLMAgentBase():
         for key, value in response_json.items():
             info = Info(key, self.__repr__(), value, prompt, None, None, iteration_idx)
             output_infos.append(info)
+            
+        if f'round_{extra_info["n"]}' not in extra_info:
+            extra_info[f'round_{extra_info["n"]}'] = []
+        extra_info[f'round_{extra_info["n"]}'].append(output_infos)
+        
         return output_infos
 
     def __repr__(self):
@@ -317,4 +322,187 @@ Here is the archive of the discovered architectures:
 [ARCHIVE]
 
 The fitness value is the median and 95% Bootstrap Confidence Interval of the correct rate on the given question. Your GOAL is to maximize the "fitness".
+'''
+
+util_code_wo_fitness = '''
+# The utility code:
+
+```python
+from collections import namedtuple
+from typing import Union
+import numpy as np
+import json
+
+import openai
+import backoff
+from utils import random_id
+
+# Initialize the Async OpenAI client
+client = openai.AsyncOpenAI()
+
+# Named tuple for holding task information
+Info = namedtuple('Info', ['name', 'author', 'content', 'prompt', 'sub_tasks', 'agents', 'iteration_idx'])
+
+# Format instructions for LLM response
+FORMAT_INST = lambda request_keys: f"Reply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY FIELDS AND MAKE SURE THE JSON FORMAT IS CORRECT!\n"
+
+# Description of the role for the LLM
+ROLE_DESC = lambda role: f"You are a {role}."
+
+@backoff.on_exception(backoff.expo, openai.RateLimitError)
+async def get_json_response_from_gpt(msg, model, system_message, temperature=0.5):
+    \"""
+    Function to get JSON response from GPT model.
+
+    Args:
+    - msg (str): The user message.
+    - model (str): The model to use.
+    - system_message (str): The system message.
+    - temperature (float): Sampling temperature.
+
+    Returns:
+    - dict: The JSON response.
+    \"""
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": msg},
+        ],
+        temperature=temperature,
+        max_tokens=1024,
+        stop=None,
+        response_format={"type": "json_object"}
+    )
+    content = response.choices[0].message.content
+    json_dict = json.loads(content)
+    return json_dict
+
+class LLMAgentBase():
+    """
+    Attributes:
+    """
+
+    def __init__(self, output_fields: list, agent_name: str,
+                 role='helpful assistant', model=None, temperature=None) -> None:
+        self.output_fields = output_fields
+        self.agent_name = agent_name
+
+        self.role = role
+        self.model = model
+        self.temperature = temperature
+        # give each instance a unique id
+        self.id = random_id()
+
+
+    def generate_prompt(self, input_infos, instruction, is_sub_task=False) -> str:
+
+        output_fields_and_description = {key: f"Your {key}." if not 'answer' in key else f"Your {key}. {global_output_description}" for key in self.output_fields}
+        system_prompt = ROLE_DESC(self.role) + "\n\n" + FORMAT_INST(output_fields_and_description)
+
+        # print('is_sub_task: ',is_sub_task)
+
+
+        # construct input infos text
+        input_infos_text = ''
+        prev_prompt = ''
+        for input_info in input_infos:
+            if isinstance(input_info, Info):
+                (field_name, author, content, prompt, _, _, iteration_idx) = input_info
+            else:
+                continue
+            if author == self.__repr__():
+                author += ' (yourself)'
+            if field_name == 'task':
+                if is_sub_task: 
+                    # input_infos_text += f'Giving the original question: \n\n{content}\n\n, and below sub-task questions and answers, please solve the sub-task: {instruction}\n\nSub-task questions and answers (if any):\n\n'
+                    input_infos_text += f'{instruction}\n\nPrevious sub-task questions and answers (if any):\n\n'
+                else:
+                    # continue # TODO: make sure it can deal with sub-tasks
+                    input_infos_text += f'{content}\n\n'
+            elif iteration_idx != -1:
+                if is_sub_task and prompt is not None and prompt != prev_prompt: 
+                    # print('prompt: ',prompt)
+                    # pattern = r"please solve the sub-task:\s*(.*?)\s*\n\nSub-task questions and answers"
+                    pattern = r"\s*(.*?)\s*\n\nPrevious sub-task questions"
+
+                    sub_question = prompt[-1]['content']
+                    match = re.search(pattern, sub_question, re.DOTALL)                                        
+                    input_infos_text += f'### {match.group(1)} \n\n ### {field_name} #{iteration_idx + 1} by {author}:\n{content}\n\n'
+                    prev_prompt = prompt
+                else:
+                    input_infos_text += f'### {field_name} #{iteration_idx + 1} by {author}:\n{content}\n\n'
+            else:
+                if is_sub_task and prompt is not None and prompt != prev_prompt: 
+                    # print('prompt: ',prompt)
+                    pattern = r"\s*(.*?)\s*\n\nPrevious sub-task questions"
+                    sub_question = prompt[-1]['content']
+                    match = re.search(pattern, sub_question, re.DOTALL)
+                    input_infos_text += f'### {match.group(1)} \n\n ### {field_name} by {author}:\n{content}\n\n'
+                    prev_prompt = prompt # we do not want to duplicate the prompt
+                else:
+                    input_infos_text += f'### {field_name} by {author}:\n{content}\n\n'
+
+        if is_sub_task: 
+            prompt = input_infos_text # instruction (sub-task in above)
+        else:
+            prompt = input_infos_text + instruction
+        return system_prompt, prompt
+
+    async def query(self, input_infos: list, instruction, iteration_idx=-1, is_sub_task=False) -> dict:
+
+        global COST_TOTAL
+
+        system_prompt, prompt = self.generate_prompt(input_infos, instruction, is_sub_task=is_sub_task)
+
+        prompt = [
+            _pack_message(content=system_prompt, role="system"),
+            _pack_message(content=prompt, role="user")]
+        # use system prompt
+
+        response_json, cost = await get_json_response_from_gpt(prompt, self.model)
+        COST_TOTAL += cost
+
+        output_infos = []
+        for key, value in response_json.items():
+            info = Info(key, self.__repr__(), value, prompt, None, None, iteration_idx)
+            output_infos.append(info)
+
+        if f'round_{extra_info["n"]}' not in extra_info:
+            extra_info[f'round_{extra_info["n"]}'] = []
+        extra_info[f'round_{extra_info["n"]}'].append(output_infos)
+
+        return output_infos
+
+    def __repr__(self):
+        return f"{self.agent_name} {self.id}"
+
+    async def __call__(self, input_infos: list, extra_info, instruction, iteration_idx=-1, is_sub_task=False):
+        return await self.query(input_infos, extra_info, instruction, iteration_idx=iteration_idx,  is_sub_task=is_sub_task)
+
+
+
+
+class AgentArchitecture:
+    \"""
+    Fill in your code here.
+    \"""
+    def forward(self, taskInfo, extra_info) -> Union[Info, str]:
+        \"""
+        Placeholder method for processing task information.
+
+        Args:
+        - taskInfo (Info): Task information.
+        - extra_info (dict): Extra information to help solve the task.
+
+        Returns:
+        - Answer (Info): Your FINAL Answer. Return namedtuple Info returned from self.make_final_answer.
+        \"""
+        pass
+```
+# Discovered architecture archive
+Here is the archive of the discovered architectures:
+
+[ARCHIVE]
+
 '''

@@ -473,6 +473,7 @@ def get_init_archive_local(blocks, extra_info):
     from blocks.async_cot import COT
     from blocks.async_cot_sc import COT_SC
     from blocks.async_llm_debate import LLM_debate
+    from blocks.async_verification import verification
 
     global_format_choice = extra_info["format_choice"]
     if global_format_choice == 'json':
@@ -487,6 +488,7 @@ def get_init_archive_local(blocks, extra_info):
         'COT_SC': COT_SC,
         'Reflexion': Reflexion,
         'LLM_debate': LLM_debate,
+        'COT_W_Verification': verification,
     }
     return [copy.deepcopy(block_map[block]) for block in blocks]  # it may be the same architecture, copy to avoid cross modification
 
@@ -543,7 +545,7 @@ def import_based_on_option_local(option, no_decompose: bool, no_meta_reward: boo
         from prompts.cot_sc.init_propose import base, EXAMPLE
         from prompts.cot_sc.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
 
-    elif option in ['plan', 'plan_sub_mem']:
+    elif option in ['plan', 'plan_sub_mem', 'plan_dynamic_mem']:
         if no_decompose:
             from prompts.plan.propose_no_decompose import base, EXAMPLE
         elif no_meta_reward:
@@ -661,6 +663,13 @@ def get_reflexion_after_eval_local(option, format_choice, no_decompose, no_meta_
             from prompts.plan.reflect_after_eval_xml import Reflexion_after_eval_prompt_sub_memory as Reflexion_after_eval_prompt
         else:
             raise NotImplementedError
+    elif option == 'plan_dynamic_mem':
+        if no_meta_reward or no_decompose:
+            raise NotImplementedError
+        if format_choice == 'json':
+            from prompts.plan.reflect_after_eval import Reflexion_after_eval_prompt_dynamic_memory as Reflexion_after_eval_prompt
+        elif format_choice == 'xml':
+            from prompts.plan.reflect_after_eval_xml import Reflexion_after_eval_prompt_dynamic_memory as Reflexion_after_eval_prompt
     else:
         raise NotImplementedError
 
