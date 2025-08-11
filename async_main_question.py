@@ -60,6 +60,7 @@ def parse_arguments():
         "--no_meta_reward", action='store_true'
     )
     parser.add_argument("--early_stop", action='store_true', default=False)
+    parser.add_argument("--no_history", action='store_true', default=False)
     args = parser.parse_args()
 
     return args
@@ -261,6 +262,7 @@ async def main(args):
             extra_info["dataset"] = args.dataset
             extra_info["code_snippet"] = code_snippet
             extra_info["early_stop"] = args.early_stop
+            extra_info["no_history"] = args.no_history
 
             # 控制并发数量的信号量，最多同时运行5个任务
             semaphore = asyncio.Semaphore(args.max_workers)
@@ -313,6 +315,7 @@ async def main(args):
             extra_info["dataset"] = args.dataset
             extra_info["code_snippet"] = code_snippet
             extra_info["early_stop"] = args.early_stop
+            extra_info["no_history"] = args.no_history
 
             # 控制并发数量的信号量，最多同时运行5个任务
             semaphore = asyncio.Semaphore(args.max_workers)

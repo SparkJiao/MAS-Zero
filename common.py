@@ -409,7 +409,10 @@ async def get_json_response_from_gpt_reflect_local(
         debug_count += 1
         response_text = ""
         try:
-            sampler_return = await sampler(msg)
+            if extra_info["no_history"]:
+                sampler_return = await sampler(msg[-3:])  # [user, assistant, user]
+            else:
+                sampler_return = await sampler(msg)
             if sampler_return == "" or debug_count > 5:  # bad request
                 json_dict = "bad_request"
                 return json_dict
