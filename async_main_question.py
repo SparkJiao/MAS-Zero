@@ -338,6 +338,113 @@ async def main(args):
 
             print(len(tasks))
             await tqdm_asyncio.gather(*tasks)
+        elif 'folio' in args.dataset:
+            cot_instruction = "Please think step by step and then solve the task."
+            output_description = "Your final answer should be one of \{True, False, Uncertain\} to indicate the given conclusion is correct, incorrect, or cannot be inferred from the given premises, respectively."
+            debate_role = ['Philosopher 1', 'Philosopher 2', 'Philosopher 3']
+            dataset = load_dataset('yale-nlp/FOLIO', split="validation")
+
+            _template = (f"I will show you a series of premises, and one conclusion. "
+                         f"Please decide if the conclusion can be inferred from the premises based on logic relations."
+                         f"\n\n"
+                         f"Premises:\n{{premises}}\n\nConclusion:\n{{conclusion}}")
+
+            examples = []
+            for item in dataset:
+                question = _template.format(premises=item["premises"], conclusion=item["conclusion"])
+                answer = item["label"]
+                examples.append({'problem': question, 'answer': answer})
+
+            examples = examples[:12]
+
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["node_model"] = node_model
+            extra_info["verifier_model"] = verifier_model
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["output_description"] = output_description
+            extra_info["dataset"] = args.dataset
+            extra_info["code_snippet"] = code_snippet
+            extra_info["early_stop"] = args.early_stop
+            extra_info["no_history"] = args.no_history
+
+            semaphore = asyncio.Semaphore(args.max_workers)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_aime_search(*a, **kw)
+
+            tasks = []
+            for example_id, example in enumerate(examples):
+                if args.given_examples:
+                    if example_id not in args.given_examples:
+                        continue
+
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
+
+            print(len(tasks))
+            await tqdm_asyncio.gather(*tasks)
+
+        elif 'hle_math' in args.dataset:  # I simply copy the instruction from AIME
+            cot_instruction = "Please think step by step and then solve the task."
+            # Multiple choice or exact match.
+            output_description = (
+                "If the question is asked for a numeric result, Return ONLY an integer and DO NOT return anything other than the integer answer; "
+                "If the question is asked for more than numeric results, Return what the question asked and make sure the answer is complete.;"
+                "If the question is in multiple-choice format, Return ONLY the alphabet choice, i.e. A or B or C or D or E.")
+
+            debate_role = ['Math Professor', 'Grade School Teacher']
+
+            dataset = load_dataset("cais/hle", split="test")
+            dataset = [item for item in dataset if item["category"] == "Math"]
+            examples = []
+            for item in dataset:
+                examples.append({'problem': item['question'], 'answer': item['answer']})
+
+            examples = examples[:24]
+
+            extra_info["node_model"] = node_model
+            extra_info["verifier_model"] = verifier_model
+            extra_info["output_description"] = output_description
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["dataset"] = args.dataset
+            extra_info["code_snippet"] = code_snippet
+            extra_info["early_stop"] = args.early_stop
+            extra_info["no_history"] = args.no_history
+
+            # 控制并发数量的信号量，最多同时运行5个任务
+            semaphore = asyncio.Semaphore(args.max_workers)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_aime_search(*a, **kw)
+
+            tasks = []
+            for example_id, example in enumerate(examples):
+
+                if args.given_examples:
+                    if example_id not in args.given_examples:
+                        continue
+
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
+
+            print(len(tasks))
+            await tqdm_asyncio.gather(*tasks)
+
         else:
             raise NotImplementedError
 

@@ -23,6 +23,7 @@ from score import DataScorer
 from utils import random_id, bootstrap_confidence_interval
 from sampler import get_model
 import asyncio
+from code_utils.diff_patch import apply_unified_diff
 
 client = openai.OpenAI()
 
@@ -53,6 +54,76 @@ Otherwise, give your answer and thinking normally.
 
 IMPORTANT: You need to give your best guess in both cases. Do not give [TOO_HARD] directly but always give your best guess first
 
+"""
+
+memory_system_prompt = """You are a memory recorder for a multi-agent workflow used in complex problem solving.
+
+Your task:
+Given the transcript and outputs of one or more rounds, generate a **minimal YAML memory** capturing:
+- Per-round reflection summaries
+- What subtasks to keep
+- Diagnoses of issues and planned fixes
+- Key prompt updates
+- Changes committed for the next round
+- Known wrong answers and reusable facts (optional if found)
+- Roll-up of best answers, failures, and lessons learned
+
+Rules:
+1. Follow this YAML structure exactly:
+
+version: 1
+problem:
+  id: <string>
+  title: <string>
+global_memory:
+  known_wrong_answers:
+    - {value: <any>, round: <int>, note: <string>}
+  reusable_facts:
+    - {key: <string>, value: <any>, round: <int>}
+runs:
+  - run_id: <string>
+    rounds:
+      - round: <int>
+        decomposition:
+          steps:
+            - {id: <string>, instruction: <string>, depends_on: [<string>]}
+        outcome:
+          final_answer: <any>
+          fitness: <number|null>
+        reflection:
+          summary: <string>
+          keep:
+            - {subtask: <string>, why: <string>}
+          diagnose_plan:
+            - subtask: <string>
+              issue: <string>
+              action: <string>
+              new_subtasks:
+                - {id: <string>, instruction: <string>, depends_on: [<string>]}
+              rationale: <string>
+          prompt_updates:
+            - {subtask: <string>, new_prompt: <string>, avoids: [<any>]}
+        changes_committed:
+          decomposition_diff: <string>
+          architecture_diff: <string>
+          param_changes:
+            - {key: <string>, from: <any>, to: <any>}
+    rollup:
+      best: {round: <int>, answer: <any>}
+      failures:
+        - {round: <int>, subtask: <string>, code: <string>, note: <string>}
+      lessons:
+        key_improvements:
+          - {change: <string>, effect: <string>, when_to_use: <string>}
+
+2. Omit all input prompts, full outputs, model parameters, and performance metrics — keep only the high-level reasoning and improvement plan.
+3. Preserve factual correctness and avoid hallucinations. If information is missing, leave the field blank or null.
+4. Keep text concise and to the point, but ensure the YAML is valid and complete.
+5. Do not include any explanations outside the YAML. Output YAML only.
+
+----
+
+Below is the conversation history and outputs of the agents. Use this to generate the memory YAML:
 """
 
 
@@ -493,15 +564,15 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         print(f"============Generation {n + 1}=================")
         extra_info["n"] = n
 
-        if n == 0:  # initial propose
-            system_prompt, prompt = get_prompt_local(cur_archive, format_choice, extra_info["no_decompose"], extra_info["no_meta_reward"],
-                                                     option=option, task_queue=task_queue)
-            msg_list = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ]
-
-            next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
+        # if n == 0:  # initial propose
+        #     system_prompt, prompt = get_prompt_local(cur_archive, format_choice, extra_info["no_decompose"], extra_info["no_meta_reward"],
+        #                                              option=option, task_queue=task_queue)
+        #     msg_list = [
+        #         {"role": "system", "content": system_prompt},
+        #         {"role": "user", "content": prompt},
+        #     ]
+        #
+        #     next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info, option)
 
         if os.path.exists(msg_path):
             print(f'load msg_list from {msg_path}')
@@ -527,7 +598,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
                                                                       'LLM Debate and Reflexion, by writing the for-loop, if you choose to use them).'},
             ]
 
-            next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info)
+            next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info, option,
+                                                                           code="" if n == 0 else cur_archive[-1]['code'])
 
         acc_list = []
         for _ in range(debug_max):
@@ -581,7 +653,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
                                                           f"Repeat name in 'name',"})
                     # TODO: sometimes still cannot fix. The reason is, the forward is a string, which provide limited error information
                 try:
-                    next_solution = await get_json_response_from_gpt_reflect_local(debug_list_reflect, meta_model, extra_info)
+                    next_solution = await get_json_response_from_gpt_reflect_local(debug_list_reflect, meta_model, extra_info, option,
+                                                                                   code="" if n == 0 else cur_archive[-1]['code'])
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -672,6 +745,20 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         if format_choice == 'xml':
             Reflexion_after_eval_prompt += "IMPORTANT: 1. Make sure to return in a WELL-FORMED XML object. Wrap the required entries with <(entry_name)> and </(entry_name)>. Reply EXACTLY with the following XML fileds.\n<reflection> [Your reflection] </reflection>\n<thought> [Your thought.] </thought>\n<name> [Your name.] </name>\n<code> [Your code.] </code>\n\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object! However, Do not use XML format inside each entry\n\n2. You must follow all the requirements in the Initial Round (Round 0) (for example, If you choose to use self-consistency, LLM Debate or Relexion, you need to ACTUALLY IMPLEMENET their structure by wrting the for-loop explictly).\n\n3.the <code> corresponds to the exact “forward()” function in Python code that you would like to try. You must write a COMPLETE CODE in <code>: Your code will be part of the entire project (so do not implement any other part), so please implement complete, reliable, reusable code snippets."
 
+        # if 'memory_ledger' in next_solution:
+        #     memory.append({"memory_ledger": next_solution["memory_ledger"]})
+        # summarize_msg_list = [
+        #     {
+        #         "role": "user",
+        #         "content": memory_system_prompt + "\n\n" + json.dumps(msg_list, indent=2)
+        #     }
+        # ]
+        # sampler = get_model(meta_model)
+        # summary_resp = await sampler(summarize_msg_list, response_format="normal")
+        # if summary_resp != "":
+        #     summary_content, _ = summary_resp
+        #     memory.append({"memory_ledger": summary_content})
+
         next_solution["memory"] = memory  # TODO: it may output 128K limit
         # print('memory: ',memory) # TODO: Too large, we may not need to print it
         msg_list.append({"role": "assistant", "content": copy.deepcopy(next_solution)})
@@ -694,8 +781,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
 
             # TODO: do we want more previous sampeld? we need to be careful about the max limit for qwen
 
-        next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list_reflect), meta_model,
-                                                                       extra_info)  # deep copy to avoid in-place changes
+        next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list_reflect), meta_model, extra_info, option,
+                                                                       cur_archive[-1]["code"])  # deep copy to avoid in-place changes
         if next_solution == 'bad_request':
             print('bad_request; break fo now')
             break

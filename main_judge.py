@@ -60,6 +60,22 @@ def rule_equality(correct, candidate):
     print(f'rule_based: extracted_answer: {extracted_answer}; answer: {answer}; score: {score}')
     return score
 
+def rule_equality_folio(correct, candidate):
+    res = candidate
+    answer = correct
+    if 'True' in res:
+        pred = 'True'
+    elif 'False' in res:
+        pred = 'False'
+    elif 'Uncertain' in res:
+        pred = 'Uncertain'
+    else:
+        pred = ''
+
+    score = pred == answer
+    print(f'rule_based: extracted_answer: {extracted_answer}; answer: {answer}; score: {score}')
+    return float(score)
+
 
 def check_equality(dataset, question, correct, candidate):
     FORMAT_INST = lambda \
@@ -73,7 +89,7 @@ def check_equality(dataset, question, correct, candidate):
 
     system_prompt = 'You are a helpful assistant. ' + FORMAT_INST(output_fields_and_description)
 
-    if dataset == 'aime24':
+    if dataset == 'aime24' or dataset == 'hle_math':
 
         prompt = EQUALITY_TEMPLATE % {"expression1": correct, "expression2": candidate}
 
@@ -123,6 +139,9 @@ def check_equality(dataset, question, correct, candidate):
 
             print(f'json_dict: {json_dict}')
             score = json_dict['equal'].lower().strip() == "yes"
+
+    elif dataset == 'folio':
+        score = rule_equality_folio(correct, candidate)
 
     return score
 

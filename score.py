@@ -32,7 +32,7 @@ class DataScorer:
 
             return score
 
-        elif 'aime24' in self.dataset:
+        elif 'aime24' in self.dataset or 'hle_math':
             res = await async_check_equality(self.equality_checker, answer, extracted_answer, use_oracle_verifier=True, judge_path=judge_path)
             return float(res)
         elif 'gpqa_diamond' in self.dataset:
@@ -79,7 +79,19 @@ class DataScorer:
             print(f'extracted_answer: {extracted_answer}; answer: {answer}; score: {score}')
 
             return score
+        elif 'folio' in self.dataset:
+            res = extracted_answer
+            if 'True' in res:
+                pred = 'True'
+            elif 'False' in res:
+                pred = 'False'
+            elif 'Uncertain' in res:
+                pred = 'Uncertain'
+            else:
+                pred = ''
 
+            score = pred == answer
+            return float(score)
         else:
             raise NotImplementedError
 
