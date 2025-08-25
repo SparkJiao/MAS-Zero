@@ -218,3 +218,230 @@ Return only this JSON structure.
 
 Be concise and precise; your goal is to maximise the next round’s fitness by focusing effort solely on the unresolved pieces.
 """
+
+# Reflexion_after_eval_prompt_dynamic_memory_diff = """Carefully review the following items produced in the previous round:
+# - the proposed architecture ("code")
+# - each sub-task answer ("sub_tasks")
+# - each agent answer ("agents")
+# - the final response ("final_response") and its fitness score ("fitness")
+# - the historical simple memory of past final answers and fitness scores ("memory")
+# - the dynamic per-round memory in `extra_info` (previous sub-task outputs stored in `round_x` keys)
+# - the persistent YAML Memory Ledger (tracks facts, design decisions, interfaces, known variables, etc.)
+#
+# Your job in this *reflection* turn is to:
+#
+# **(1) Summarize**
+# Provide a concise summary of the main reasoning steps taken by all agents in the previous round.
+#
+# **(2) Keep**
+# List every sub-task whose answer is already correct or otherwise adequate. For each, state “⭑ keep” and briefly justify why it needs no further work.
+#
+# **(3) Diagnose & Plan**
+# For every remaining sub-task:
+#   • Decide whether it merely needs a *prompt/agent tweak* **or** requires *further decomposition* into simpler pieces.
+#   • Explain *why* (e.g., answer incorrect, `[TOO_HARD]`, agent malfunction, missing info, etc.).
+# If decomposition is needed, outline the new, smaller sub-tasks and show how they connect to solved ones.
+#
+# **(4) Rewrite sub-agent prompts**
+# Draft fresh prompts **only** for the sub-tasks that still need work (those identified in step 3).
+# Make sure each prompt:
+#   – references any prerequisite information it needs (e.g., “Based on the output of sub-task i …”).
+#   – is specific, self-contained, and avoids giving direct answers or forbidden shortcuts.
+#   – instructs the agent to avoid known wrong answers listed in `"memory"` when relevant.
+#
+# ---
+#
+# ### Required output format
+#
+# You must return the following JSON fields:
+#
+# "reflection":
+# (1) Provide your thoughts on the Solvable, Completeness and Fitness of the architecture and/or task decomposition (which sub-tasks are incorrect? which agent in which block malfunctioned?)
+# (2) Identify any inappropriate points in the implementation, and suggest improvements (why the improvements can lead to a better final answer? Explain in detail)
+#
+# "thought": Revise your previous proposal or propose a new architecture if necessary, using the same format as the example response.
+#
+# For case (a): **Further Decomposition**
+# Compare to your previous decomposition attempts in the Discovered architecture archive (see the 'thought' entries), show how you further decompose. Format:
+# `last sub-task 1 -> (further decompose to) new sub-task 2, new sub-task 3, ...`
+# Justify (1) why the new sub-tasks are solvable and (2) how they can achieve the final answer.
+#
+# For case (b): **Improved subtask architecture**
+# Compare to your last block attempts, describe connection changes without adding new blocks.
+# Format:
+# `last sub-task architecture (aims to address sub-task i) -> (improve to) new sub-task architecture (main difference)`
+# Justify how the new connection improves solving ability.
+#
+# For case where the final response is unchanged and still wrong: **Updated Subtask Instruction**
+# Explicitly add to the last sub-task prompt:
+# `It is known that (wrong answers, include all from 'memory' with 0 fitness score) is not correct.`
+#
+# "name": Provide a name for the revised or new architecture.
+#
+# "code":
+# Update the code **in unified diff format** against the previous `code`.
+# **Rules for the diff**:
+#   - Use `--- a/main.py` / `+++ b/main.py` headers (or actual file name).
+#   - Minimal hunks; do not reformat unrelated code.
+#   - Only change lines required for your improvements.
+#   - Must apply cleanly to baseline.
+#   - End with newline.
+#
+# The diff should incorporate the dynamic memory re-use pattern if some sub-agents remain unchanged:
+# ```python
+# # Reuse from previous round
+# thinking1, answer1 = extra_info['round_1'][0]
+# if 'round_2' not in extra_info:
+#     extra_info['round_2'] = []
+# extra_info['round_2'].append([thinking1, answer1])
+# ````
+#
+# …and for new sub-tasks, rely on the sub-agent call to save outputs automatically.
+#
+# The **original simple memory** (summarising historical final answers & fitness scores) must still be present in the `"memory"` JSON key.
+#
+# Additionally, you must **maintain the persistent YAML Memory Ledger** in a separate `"memory_ledger"` field inside the same JSON object.
+# This ledger must follow the schema:
+#
+# ```yaml
+# version: <int>                 # bump when schema changes
+# context:
+#   task_name: <string>
+#   problem_facts:
+#     - ...
+#   assumptions:
+#     - ...
+# design:
+#   roles_agents:
+#     - name: ...
+#       io_contract:
+#         inputs: [...]
+#         outputs: [...]
+#   architecture_notes:
+#     - ...
+# interfaces:
+#   functions:
+#     - name: forward
+#       signature: "async def forward(self, taskInfo, extra_info):"
+#       invariants:
+#         - ...
+#   messages:
+#     - name: LLMAgentBase
+#       contract: ["thinking", "answer"]
+# state:
+#   known_variables: {}
+#   cached_results: []
+# decisions:
+#   changes_this_round:
+#     - ...
+#   risks_tradeoffs:
+#     - ...
+# todo_next:
+#   - ...
+# ```
+#
+# **Memory Ledger Rules**:
+#
+# * Never drop valid past facts/design unless explicitly superseded; move to `decisions` if replaced.
+# * Sync `known_variables` with actual code changes.
+# * Update `changes_this_round` with exactly what changed in this diff and why.
+#
+# ---
+#
+# When re-using results from `extra_info`, do not re-send the same sub-task instruction — pull it directly and append to current round’s list.
+# When generating the final JSON object:
+#
+# * `"memory"` = simple history of final answers & fitness
+# * `"memory_ledger"` = YAML ledger string as above
+# * `"code"` = unified diff string
+#
+# Only output the final JSON object.
+# """
+
+
+Reflexion_after_eval_prompt_dynamic_memory_diff = """Carefully review the following items produced in the previous round:
+- the proposed architecture ("code")
+- each sub-task answer ("sub_tasks")
+- each agent answer ("agents")
+- the final response ("final_response") and its fitness score ("fitness")
+- the historical simple memory of past final answers and fitness scores ("memory")
+- the dynamic per-round memory in `extra_info` (previous sub-task outputs stored in `round_x` keys)
+
+Your job in this *reflection* turn is to:
+
+**(1) Summarize**  
+Provide a concise summary of the main reasoning steps taken by all agents in the previous round.
+
+**(2) Keep**  
+List every sub-task whose answer is already correct or otherwise adequate. For each, state “⭑ keep” and briefly justify why it needs no further work.
+
+**(3) Diagnose & Plan**  
+For every remaining sub-task:  
+  • Decide whether it merely needs a *prompt/agent tweak* **or** requires *further decomposition* into simpler pieces.  
+  • Explain *why* (e.g., answer incorrect, `[TOO_HARD]`, agent malfunction, missing info, etc.).  
+If decomposition is needed, outline the new, smaller sub-tasks and show how they connect to solved ones.
+
+**(4) Rewrite sub-agent prompts**  
+Draft fresh prompts **only** for the sub-tasks that still need work (those identified in step 3).  
+Make sure each prompt:  
+  – references any prerequisite information it needs (e.g., “Based on the output of sub-task i …”).  
+  – is specific, self-contained, and avoids giving direct answers or forbidden shortcuts.  
+  – instructs the agent to avoid known wrong answers listed in `"memory"` when relevant.
+
+---
+
+### Required output format
+
+You must return the following JSON fields:
+
+"reflection":  
+(1) Provide your thoughts on the Solvable, Completeness and Fitness of the architecture and/or task decomposition (which sub-tasks are incorrect? which agent in which block malfunctioned?)  
+(2) Identify any inappropriate points in the implementation, and suggest improvements (why the improvements can lead to a better final answer? Explain in detail)  
+
+"thought": Revise your previous proposal or propose a new architecture if necessary, using the same format as the example response.
+
+For case (a): **Further Decomposition**  
+Compare to your previous decomposition attempts in the Discovered architecture archive (see the 'thought' entries), show how you further decompose. Format:  
+`last sub-task 1 -> (further decompose to) new sub-task 2, new sub-task 3, ...`  
+Justify (1) why the new sub-tasks are solvable and (2) how they can achieve the final answer.
+
+For case (b): **Improved subtask architecture**  
+Compare to your last block attempts, describe connection changes without adding new blocks.  
+Format:  
+`last sub-task architecture (aims to address sub-task i) -> (improve to) new sub-task architecture (main difference)`  
+Justify how the new connection improves solving ability.
+
+For case where the final response is unchanged and still wrong: **Updated Subtask Instruction**  
+Explicitly add to the last sub-task prompt:  
+`It is known that (wrong answers, include all from 'memory' with 0 fitness score) is not correct.`
+
+"name": Provide a name for the revised or new architecture.
+
+"code":  
+Update the code **in unified diff format** against the previous `code`.  
+**Rules for the diff**:  
+  - Use `--- a/main.py` / `+++ b/main.py` headers (or actual file name).  
+  - Minimal hunks; do not reformat unrelated code.  
+  - Only change lines required for your improvements.  
+  - Must apply cleanly to baseline.  
+  - End with newline.
+
+The diff should incorporate the dynamic memory re-use pattern if some sub-agents remain unchanged:  
+```python
+# Reuse from previous round
+thinking1, answer1 = extra_info['round_1'][0]
+if 'round_2' not in extra_info:
+    extra_info['round_2'] = []
+extra_info['round_2'].append([thinking1, answer1])
+````
+
+…and for new sub-tasks, rely on the sub-agent call to save outputs automatically.
+
+The **original simple memory** (summarising historical final answers & fitness scores) must still be present in the `"memory"` JSON key.
+
+When re-using results from `extra_info`, do not re-send the same sub-task instruction — pull it directly and append to current round’s list.
+When generating the final JSON object:
+
+* `"memory"` = simple history of final answers & fitness
+* `"code"` = unified diff string
+"""

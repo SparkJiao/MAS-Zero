@@ -19,6 +19,7 @@ from blocks.cot_sc import COT_SC
 from blocks.llm_debate import LLM_debate
 from sampler import get_model
 from shared_vars import get_global, add_to_global_cost
+from code_utils.diff_patch import apply_unified_diff
 
 Message = dict[str, Any]  # keys role, content
 MessageList = list[Message]
@@ -394,7 +395,9 @@ def get_json_response_from_gpt_reflect(
 async def get_json_response_from_gpt_reflect_local(
         msg,
         model,
-        extra_info
+        extra_info,
+        option: str = "plan",
+        code: str = "",
 ):
     # "thought":  # "name": "Chain-of-Thought", # "code":
     # print('model: ',model)
@@ -422,17 +425,22 @@ async def get_json_response_from_gpt_reflect_local(
 
             # print('json_dict: ',json_dict)
             keys = json_dict.keys()
+            if option == "plan_dynamic_mem_diff" and "@@" in json_dict['code'] and code:
+                json_dict['diff'] = json_dict['code']
+                json_dict['code'] = apply_unified_diff(code, json_dict['diff'], whitespace_fallback=False)[0]
+
             # TODO: consider constraint the json like above
-            if 'name' in keys and 'thought' in keys and 'code' in keys and 'async def forward(self, taskInfo, extra_info):' in json_dict['code']:
-                try:
-                    compile(json_dict['code'], "<string>", "exec")
-                except SyntaxError as e:
-                    print(f"Syntax error: {e}. Rerun")
-                    continue
-                break
-            else:  # inocrrect
-                if not 'async def forward(self, taskInfo, extra_info):' in json_dict['code']:
-                    print(f"code: {json_dict['code']}; reflection: {json_dict['reflection']}")
+            if 'name' in keys and 'thought' in keys and 'code' in keys:
+                if 'async def forward(self, taskInfo, extra_info):' in json_dict['code']:
+                    try:
+                        compile(json_dict['code'], "<string>", "exec")
+                    except SyntaxError as e:
+                        print(f"Syntax error: {e}. Rerun")
+                        continue
+                    break
+                else:
+                    print(f"Invalid code format: {json_dict['code']}")
+            else:  # incorrect
                 print(f"missing key: {keys}", )
         except Exception as e:
             import traceback
@@ -548,7 +556,7 @@ def import_based_on_option_local(option, no_decompose: bool, no_meta_reward: boo
         from prompts.cot_sc.init_propose import base, EXAMPLE
         from prompts.cot_sc.reflect_before_eval import Reflexion_prompt_1, Reflexion_prompt_2
 
-    elif option in ['plan', 'plan_sub_mem', 'plan_dynamic_mem']:
+    elif option in ['plan', 'plan_sub_mem', 'plan_dynamic_mem', 'plan_dynamic_mem_diff']:
         if no_decompose:
             from prompts.plan.propose_no_decompose import base, EXAMPLE
         elif no_meta_reward:
@@ -673,6 +681,13 @@ def get_reflexion_after_eval_local(option, format_choice, no_decompose, no_meta_
             from prompts.plan.reflect_after_eval import Reflexion_after_eval_prompt_dynamic_memory as Reflexion_after_eval_prompt
         elif format_choice == 'xml':
             from prompts.plan.reflect_after_eval_xml import Reflexion_after_eval_prompt_dynamic_memory as Reflexion_after_eval_prompt
+    elif option == 'plan_dynamic_mem_diff':
+        if no_meta_reward or no_decompose:
+            raise NotImplementedError
+        if format_choice == 'json':
+            from prompts.plan.reflect_after_eval import Reflexion_after_eval_prompt_dynamic_memory_diff as Reflexion_after_eval_prompt
+        elif format_choice == 'xml':
+            raise NotImplementedError
     else:
         raise NotImplementedError
 
