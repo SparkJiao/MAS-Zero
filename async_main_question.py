@@ -445,6 +445,101 @@ async def main(args):
             print(len(tasks))
             await tqdm_asyncio.gather(*tasks)
 
+        elif 'knights-and-knaves' in args.dataset:
+            cot_instruction = "Let's think step by step, by considering whether each person is lying and if that leads to contradiction"
+            debate_role = ["Expert Player 1", "Expert Player 2", "Expert Player 3"]
+            output_description = "Please illustrate each one's identity clearly after enough reasoning."
+
+            dataset = load_dataset("K-and-K/knights-and-knaves", "test", split="2ppl")
+
+            examples = []
+            for item in dataset:
+                examples.append({
+                    "problem": item["quiz"],
+                    "answer": item["solution_text_format"]
+                })
+
+            examples = examples[:24]
+
+            extra_info["node_model"] = node_model
+            extra_info["verifier_model"] = verifier_model
+            extra_info["output_description"] = output_description
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["dataset"] = args.dataset
+            extra_info["code_snippet"] = code_snippet
+            extra_info["early_stop"] = args.early_stop
+            extra_info["no_history"] = args.no_history
+
+            # 控制并发数量的信号量，最多同时运行5个任务
+            semaphore = asyncio.Semaphore(args.max_workers)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_aime_search(*a, **kw)
+
+            tasks = []
+            for example_id, example in enumerate(examples):
+
+                if args.given_examples:
+                    if example_id not in args.given_examples:
+                        continue
+
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
+
+            print(len(tasks))
+            await tqdm_asyncio.gather(*tasks)
+        elif "hanoi" in args.dataset:
+            from hanoi import load_hanoi, problem_template as cot_instruction, judge_prompt as hanoi_judge_prompt
+
+            debate_role = ["Expert Player 1", "Expert Player 2", "Expert Player 3"]
+            output_description = ""
+
+            examples = load_hanoi(3, 5)
+
+            extra_info["node_model"] = node_model
+            extra_info["verifier_model"] = verifier_model
+            extra_info["output_description"] = output_description
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["dataset"] = args.dataset
+            extra_info["code_snippet"] = code_snippet
+            extra_info["early_stop"] = args.early_stop
+            extra_info["no_history"] = args.no_history
+
+            # 控制并发数量的信号量，最多同时运行5个任务
+            semaphore = asyncio.Semaphore(args.max_workers)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_aime_search(*a, **kw)
+
+            tasks = []
+            for example_id, example in enumerate(examples):
+
+                if args.given_examples:
+                    if example_id not in args.given_examples:
+                        continue
+
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
+
+            print(len(tasks))
+            await tqdm_asyncio.gather(*tasks)
+
         else:
             raise NotImplementedError
 

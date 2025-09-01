@@ -60,6 +60,7 @@ def rule_equality(correct, candidate):
     print(f'rule_based: extracted_answer: {extracted_answer}; answer: {answer}; score: {score}')
     return score
 
+
 def rule_equality_folio(correct, candidate):
     res = candidate
     answer = correct
@@ -79,7 +80,7 @@ def rule_equality_folio(correct, candidate):
 
 def check_equality(dataset, question, correct, candidate):
     FORMAT_INST = lambda \
-        request_keys: f"""Reply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n"""
+            request_keys: f"""Reply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n"""
 
     output_description = "Return ONLY 'yes' or 'no' and DO NOT return anything other than these two."
     thinking_description = "Give your detialed thinking, Specifically, what is expression 1 and what is expression 2."
@@ -142,6 +143,43 @@ def check_equality(dataset, question, correct, candidate):
 
     elif dataset == 'folio':
         score = rule_equality_folio(correct, candidate)
+
+    elif dataset == 'knights-and-knaves':
+        _judge_prompt = ("I will show you a model's response as well as the ground-truth answer towards a knights-and-knaves puzzle. "
+                         "Please determine if the model's response is consistent with the ground truth."
+                         "\n\nMode's Response:\n"
+                         "{response}\n\n"
+                         "Ground Truth:\n"
+                         "{answer}\n\n"
+                         "Your response should only contains `Yes` or `No`.").format(response=candidate, answer=correct)
+
+        res = equality_checker([{"role": "user", "content": _judge_prompt}], response_format="normal")
+        res = res[0]
+        if "yes" in res.lower():
+            score = 1.0
+        else:
+            score = 0.0
+    elif dataset == 'hanoi':
+        from hanoi import judge_prompt
+
+        _judge_prompt = ("Here is a move sequence of Hanoi Game:\n\n{response}\n\n"
+                         "Please evaluate the it according to the following criteria:\n\n").format(response=candidate) + judge_prompt
+        # _judge_prompt = ("Here is a move sequence of Hanoi Game:\n\n{response}\n\n"
+        #                  "Here is the ground-truth move of Hanoi Game:\n\n{answer}\n\n"
+        #                  "Please evaluate the it by comparing the predicted move sequence and the ground truth one."
+        #                  ).format(response=candidate, answer=correct) + judge_prompt
+
+        _judge_prompt = _judge_prompt + "\n\nYou can first think step by step, and put your final decision in <decision> True or False </decision>."
+
+        res = equality_checker([{"role": "user", "content": _judge_prompt}], response_format="normal")
+        res = res[0]
+        m = re.search(r"<decision>\s*(true|false)\s*</decision>", res, re.IGNORECASE)
+        # return None if not m else (m.group(1).lower() == "true")
+        if not m:
+            score = 0.0
+        else:
+            pred = m.group(1).lower()
+            score = float(pred == "true")
 
     return score
 

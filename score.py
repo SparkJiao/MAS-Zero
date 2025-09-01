@@ -92,6 +92,36 @@ class DataScorer:
 
             score = pred == answer
             return float(score)
+        elif 'knights-and-knaves' in self.dataset:
+            _judge_prompt = ("I will show you a model's response as well as the ground-truth answer towards a knights-and-knaves puzzle. "
+                             "Please determine if the model's response is consistent with the ground truth."
+                             "\n\nMode's Response:\n"
+                             "{response}\n\n"
+                             "Ground Truth:\n"
+                             "{answer}\n\n"
+                             "Your response should only contains `Yes` or `No`.").format(response=extracted_answer, answer=answer)
+
+            res = await self.equality_checker([{"role": "user", "content": _judge_prompt}], response_format="normal")
+            res = res[0]
+            if "yes" in res.lower():
+                return 1.0
+            return 0.0
+        elif 'hanoi' in self.dataset:
+            from hanoi import judge_prompt
+
+            _judge_prompt = ("Here is a move sequence of Hanoi Game:\n\n{response}\n\n"
+                             "Please evaluate the it according to the following criteria:\n\n") + judge_prompt
+
+            _judge_prompt = _judge_prompt + "\n\nYou can first think step by step, and put your final decision in <decision> True or False </decision>."
+
+            res = await self.equality_checker([{"role": "user", "content": _judge_prompt}], response_format="normal")
+            res = res[0]
+            m = re.search(r"<decision>\s*(true|false)\s*</decision>", res, re.IGNORECASE)
+            # return None if not m else (m.group(1).lower() == "true")
+            if not m:
+                return 0.0
+            pred = m.group(1).lower()
+            return float(pred == "true")
         else:
             raise NotImplementedError
 
