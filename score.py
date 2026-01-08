@@ -2,7 +2,6 @@ from common import ANSWER_PATTERN, async_check_equality
 from sampler import AsyncChatCompletionSampler
 
 from utils import extract_xml
-from utils import load_questions
 import common
 import json
 from common import HTML_JINJA, SingleEvalResult
@@ -18,21 +17,18 @@ class DataScorer:
         self.mode_verifier = mode_verifier
         self.LETTER_TO_INDEX = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
 
+    def _is_swe_dataset(self):
+        return any(tag in self.dataset for tag in ('swe_bench', 'workflow_search/swe', 'swe_test'))
+
     async def run_score(self, answer, extracted_answer, use_oracle_verifier, judge_path, instance_id, n, code_snippet):
 
-        if 'swe_bench' in self.dataset:
-            raise NotImplementedError("Should use multi")
-
-            score, percentage, passed_tests, total_tests = run_swebench_evaluation(judge_path, instance_id, extracted_answer, self.technique, n, code_snippet)
-
-            with open(judge_path, 'a+') as judge_file:
-                judge_file.write(
-                    f'{instance_id} → {passed_tests} passed test | {total_tests} total_tests | '
-                    f'{passed_tests}/{total_tests} passed → {percentage:.1f}% | Score: {score}\n')
-
-            return score
-
-        elif 'aime24' in self.dataset or 'hle_math':
+        if self._is_swe_dataset():
+            print("SWE verification placeholder: returning 0.0 (requires offline evaluation).")
+            return 0.0
+        elif 'aime24' in self.dataset or 'hle_math' in self.dataset:
+            res = await async_check_equality(self.equality_checker, answer, extracted_answer, use_oracle_verifier=True, judge_path=judge_path)
+            return float(res)
+        elif 'browsecomp-plus' in self.dataset:
             res = await async_check_equality(self.equality_checker, answer, extracted_answer, use_oracle_verifier=True, judge_path=judge_path)
             return float(res)
         elif 'gpqa_diamond' in self.dataset:
@@ -128,14 +124,21 @@ class DataScorer:
     async def score(self, example_id, n, prompt_message, question, response_text, answer, sub_tasks_text, use_oracle_verifier, judge_path, response_path,
                     response_dict, instance_id, code_snippet):
 
-        if 'swe_bench' in self.dataset:
+        if self._is_swe_dataset():
             extracted_answer = response_text.split('\n\nAnswer:', 1)[-1].strip()
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
         else:
-            match = re.search(ANSWER_PATTERN, response_text)
-            extracted_answer = match.group(1) if match else None
-            extracted_answer = extracted_answer.strip()
+            try:
+                match = re.search(ANSWER_PATTERN, response_text)
+                extracted_answer = match.group(1) if match else None
+                extracted_answer = extracted_answer.strip()
+            except NameError as e:
+                import traceback
+                traceback.print_exc()
+                print(ANSWER_PATTERN)
+                print(response_text)
+                raise e
 
         print('extracted_answer: ', extracted_answer)
 

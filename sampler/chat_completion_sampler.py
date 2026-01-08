@@ -17,7 +17,7 @@ class ChatCompletionSampler(SamplerBase):
             model: str = "gpt-3.5-turbo",
             system_message: str | None = None,
             temperature: float = 0.5,
-            # max_tokens: int = 1024,
+            max_tokens: int = 1024,
     ):
         self.api_key_name = "OPENAI_API_KEY"
         self.client = OpenAI()
@@ -25,7 +25,7 @@ class ChatCompletionSampler(SamplerBase):
         self.model = model
         self.system_message = system_message
         self.temperature = temperature
-        # self.max_tokens = max_tokens
+        self.max_tokens = max_tokens
         self.image_format = "url"
 
     def _handle_image(
@@ -46,6 +46,8 @@ class ChatCompletionSampler(SamplerBase):
         return {"role": str(role), "content": content}
 
     def __call__(self, message_list: MessageList, temperature=None, response_format=None) -> str:
+        if temperature != 1.0 and "gpt-5" in self.model:
+            temperature = 1.0
         if self.system_message:
             message_list = [self._pack_message("system", self.system_message)] + message_list
         trial = 0
@@ -56,20 +58,26 @@ class ChatCompletionSampler(SamplerBase):
                         message_list[message_id]['content'] = str(message['content'])
                 # print('message_list: ',message_list)
 
+                kwargs = {}
+                if "gpt-5" in self.model:
+                    kwargs["max_completion_tokens"] = self.max_tokens
+                else:
+                    kwargs["max_tokens"] = self.max_tokens
+
                 if response_format == 'normal':
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=message_list,
                         temperature=temperature if temperature is not None else self.temperature,
-                        # max_tokens=self.max_tokens
+                        **kwargs
                     )
                 else:
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=message_list,
                         temperature=temperature if temperature is not None else self.temperature,
-                        # max_tokens=self.max_tokens, 
-                        response_format={"type": "json_object"}
+                        response_format={"type": "json_object"},
+                        **kwargs
                     )
                 # print('response: ',response)
                 return response.choices[0].message.content, response.usage
@@ -102,6 +110,7 @@ class AsyncChatCompletionSampler(ChatCompletionSampler):
             system_message: str | None = None,
             temperature: float = 0.5,
             max_tokens: int = 1024,
+            response_format: str = "json",
     ):
         self.api_key_name = "OPENAI_API_KEY"
         self.client = AsyncOpenAI()
@@ -111,8 +120,11 @@ class AsyncChatCompletionSampler(ChatCompletionSampler):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.image_format = "url"
+        self.response_format = response_format
 
     async def __call__(self, message_list: MessageList, temperature=None, response_format=None) -> str:
+        if temperature != 1.0 and "gpt-5" in self.model:
+            temperature = 1.0
         if self.system_message:
             message_list = [self._pack_message("system", self.system_message)] + message_list
         trial = 0

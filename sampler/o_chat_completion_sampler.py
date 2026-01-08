@@ -42,7 +42,7 @@ class OChatCompletionSampler(SamplerBase):
     def _pack_message(self, role: str, content: Any):
         return {"role": str(role), "content": content}
 
-    def __call__(self, message_list: MessageList) -> str:
+    def __call__(self, message_list: MessageList):
         # TODO: tempreture cannot be set
         trial = 0
         while True:
@@ -62,7 +62,7 @@ class OChatCompletionSampler(SamplerBase):
             # NOTE: BadRequestError is triggered once for MMMU, please uncomment if you are reruning MMMU
             except openai.BadRequestError as e:
                 print("Bad Request Error", e)
-                return ""
+                return "", ""
             except Exception as e:
                 exception_backoff = 2 ** trial  # expontial back off
                 print(

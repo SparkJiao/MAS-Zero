@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from common import EQUALITY_TEMPLATE, MCQ_EQUALITY_TEMPLATE, ANSWER_PATTERN
 from llm_judge import self_verifier_list_wise
@@ -195,6 +196,7 @@ parser.add_argument('--model', type=str, default="gpt-4o_chatgpt")
 parser.add_argument('--majority_vote', action='store_true')
 parser.add_argument("--save_dir", type=str, default="results")
 parser.add_argument("--option", type=str, default="plan")
+parser.add_argument('--num_workers', type=int, default=max(1, (os.cpu_count() or 2) // 2))
 args = parser.parse_args()
 
 if __name__ == "__main__":
@@ -251,6 +253,9 @@ if __name__ == "__main__":
     sampler = model_sampler_map[model]
 
     correct_example = []
+    if 'gpqa' in dataset:
+        assert min_sample == 32
+        assert max_sample == 197
 
     for example_id in range(min_sample, max_sample + 1):
         # subset = [0,1,2,3,4,31,32,33,51,52,53,54,55,56,57,70,71,72,73,131,132,133,134,135,136,137,138]

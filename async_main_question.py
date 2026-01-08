@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import copy
+import json
+from pathlib import Path
 
 import pandas as pd
 from datasets import load_dataset
@@ -11,6 +13,24 @@ from prompts.swe.patch_oracle import AGENTLESS_REPAIR
 from sampler import init_model
 from utils import extract_xml
 from utils import load_questions
+
+
+def determine_format(model_name):
+    json_model = ['gpt']
+    xml_model = ['qwen', 'llama-3.3', 'deepseek']
+
+    if any(kw in model_name for kw in json_model):
+        format_inst_template = ("Reply EXACTLY with the following JSON format.\n{request_keys}\n"
+                                "DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n")
+        return format_inst_template, "json"
+
+    elif any(kw in model_name for kw in xml_model):
+        format_inst_template = ("Reply EXACTLY with the following XML format.\n{request_keys}\n"
+                                "DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n")
+        return format_inst_template, 'xml'
+
+    else:
+        raise NotImplementedError
 
 
 def parse_arguments():
@@ -61,6 +81,7 @@ def parse_arguments():
     )
     parser.add_argument("--early_stop", action='store_true', default=False)
     parser.add_argument("--no_history", action='store_true', default=False)
+    parser.add_argument("--max_tokens", type=int, default=4096)
     args = parser.parse_args()
 
     return args
@@ -73,6 +94,7 @@ async def run_aime_search(example, example_id, meta_model, node_model, verifier_
 
     questions = [example['problem']]
     answers = [example['answer']]
+    instance_identifier = example.get('instance_id', example_id)
 
     task_queue = []
     for q in questions:
@@ -82,7 +104,7 @@ async def run_aime_search(example, example_id, meta_model, node_model, verifier_
     extra_info["answers"] = answers
     extra_info["questions"] = questions
     extra_info["example_id"] = example_id
-    extra_info["instance_id"] = example_id
+    extra_info["instance_id"] = instance_identifier
     extra_info["response_dict"] = []
 
     # search
@@ -112,9 +134,50 @@ async def run_gpqa_search(example, example_id, meta_model, node_model, verifier_
     extra_info["questions"] = final_question  # 注意：此处原始代码使用了 final_question 变量
     extra_info["example_id"] = example_id
     extra_info["response_dict"] = []
-    extra_info["instance_id"] = example_id
+    extra_info["instance_id"] = example.get('instance_id', example_id)
 
     # search
+    await search.search(extra_info, task_queue, meta_model, blocks, verifier_model, n_generation,
+                        save_dir, expr_name, option, dataset, defer_verifier, debug_max)
+
+
+async def run_swe_search(example, example_id, meta_model, node_model, verifier_model, n, dataset, extra_info,
+                         blocks, n_generation, save_dir, option, defer_verifier, debug_max):
+    expr_name = f'question/meta_agent/{dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
+    print('args.expr_name: ', expr_name)
+
+    instance_id = example['instance_id']
+    example_text = example['text']
+
+    cot_instruction = extra_info["cot_instruction"]
+    if extra_info["format_choice"] == 'xml':
+        example_text = example_text.replace('<patch>', '<answer>').replace('</patch>', '</answer>')
+        example_text = example_text.replace('Please respond with a single patch file in the following format.',
+                                            'If asked for <answer> field, the <answer> field should be a single patch file in the following format')
+        cot_instruction = "Put your thinking process in the <thinking> field and the final patch in the <answer> field."
+
+    code_snippet = extract_xml(example_text, 'code').strip()
+    print('code_snippet: ', code_snippet)
+
+    questions = [example_text + '\n\n' + AGENTLESS_REPAIR]
+    answers = [None]
+
+    print('instance_id: ', instance_id)
+
+    task_queue = []
+    for q in questions:
+        taskInfo = ('task', 'User', q, None, None, None, -1)
+        task_queue.append(taskInfo)
+
+    extra_info["cot_instruction"] = cot_instruction
+    extra_info["answers"] = answers
+    extra_info["questions"] = questions
+    extra_info["example_id"] = example_id
+    extra_info["response_dict"] = []
+    extra_info["dataset"] = dataset
+    extra_info["instance_id"] = instance_id
+    extra_info["code_snippet"] = code_snippet
+
     await search.search(extra_info, task_queue, meta_model, blocks, verifier_model, n_generation,
                         save_dir, expr_name, option, dataset, defer_verifier, debug_max)
 
@@ -136,26 +199,13 @@ async def main(args):
     # print('technique: ', technique)
     print('node_model: ', node_model)
 
-    json_model = ['gpt']
-    xml_model = ['qwen', 'llama-3.3', 'deepseek']
-
     extra_info = {}
-    if any(kw in node_model for kw in json_model):
-        format_inst_template = ("Reply EXACTLY with the following JSON format.\n{request_keys}\n"
-                                "DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n")
-        extra_info["format_choice"] = "json"
+    format_inst_template, format_choice = determine_format(node_model)
+    extra_info["format_choice"] = format_choice
 
-    elif any(kw in node_model for kw in xml_model):
-        format_inst_template = ("Reply EXACTLY with the following XML format.\n{request_keys}\n"
-                                "DO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed XML object!\n\n")
-        extra_info["format_choice"] = 'xml'
-
-    else:
-        raise NotImplementedError
-
-    init_model(verifier_model)
-    init_model(node_model)
-    init_model(meta_model)
+    init_model(verifier_model, response_format=determine_format(verifier_model)[1], max_tokens=args.max_tokens)
+    init_model(node_model, response_format=format_choice, max_tokens=args.max_tokens)
+    init_model(meta_model, response_format=format_choice, max_tokens=args.max_tokens)
 
     extra_info["FORMAT_INST"] = format_inst_template
     extra_info["shorten_context"] = args.shorten_context
@@ -171,7 +221,7 @@ async def main(args):
 
     code_snippet = None
     for n in range(args.n_repeats):
-        if 'swe_bench' in args.dataset:
+        if ('swe_bench' in args.dataset) or ('workflow_search/swe' in args.dataset) or ('swe_test' in args.dataset):
 
             cot_instruction = "Put your thinking process in the 'thinking' entry and the final patch in the 'answer' entry."  # TODO: may need something for xml
 
@@ -182,62 +232,54 @@ async def main(args):
                 "If the question is asked for a patch to fix an issue, Return ONLY the solution and DO NOT return anything other than the patch;"
                 " If the question is asked for more than a patch, Return what the question asked and make sure the answer is complete.")
 
-            # Load SWE-bench dataset
-            examples = load_dataset("princeton-nlp/SWE-bench_Lite_oracle", split="test")
+            # Load SWE dataset
+            if 'swe_bench' in args.dataset:
+                examples = load_dataset("princeton-nlp/SWE-bench_Lite_oracle", split="test")
+            else:
+                dataset_path = Path("dataset/swe_test.jsonl")
+                if not dataset_path.exists():
+                    raise FileNotFoundError(f"SWE data file not found at {dataset_path}")
+                examples = []
+                with dataset_path.open() as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        examples.append(json.loads(line))
 
+            extra_info["output_description"] = output_description
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["node_model"] = node_model
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["dataset"] = args.dataset
+            extra_info["early_stop"] = args.early_stop
+            extra_info["verifier_model"] = verifier_model
+            extra_info["no_history"] = args.no_history
+
+            semaphore = asyncio.Semaphore(args.max_workers)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_swe_search(*a, **kw)
+
+            tasks = []
             for example_id, example in enumerate(examples):
 
                 if args.given_examples:
-                    if example_id not in args.given_examples: continue
+                    if example_id not in args.given_examples:
+                        continue
 
-                    # if example_id <= 1: continue
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
 
-                args.expr_name = f'question/meta_agent/{args.dataset}/{example_id}/{meta_model}_{node_model}_{verifier_model}_{n}'
-                print('args.expr_name: ', args.expr_name)
-
-                instance_id = example['instance_id']
-                example_text = example['text']
-
-                if extra_info["format_choice"] == 'xml':  # conflict with xml TODO: ADAS and OURS may also need to change
-                    example_text = example_text.replace('<patch>', '<answer>').replace('</patch>', '</answer>')
-                    example_text = example_text.replace('Please respond with a single patch file in the following format.',
-                                                        'If asked for <answer> field, the <answer> field should be a single patch file in the following format')
-                    # example_text += '\n\nIf asked for <thinking> field, you should put your thinking in the <thinking> field.'
-                    cot_instruction = "Put your thinking process in the <thinking> field and the final patch in the <answer> field."  # TODO: may need something for xml
-
-                code_snippet = extract_xml(example_text, 'code').strip()
-                print('code_snippet: ', code_snippet)
-
-                questions = [example_text + '\n\n' + AGENTLESS_REPAIR]
-
-                answers = [None]
-
-                print('instance_id: ', instance_id)
-
-                task_queue = []
-                for q in questions:
-                    taskInfo = ('task', 'User', q, None, None, None, -1)
-                    task_queue.append(taskInfo)
-
-                extra_info["output_description"] = output_description
-                # extra_info["score_compute"] = data_scorer.score
-                extra_info["max_round"] = max_round
-                extra_info["max_sc"] = max_sc
-                extra_info["debate_role"] = debate_role
-                extra_info["cot_instruction"] = cot_instruction
-                extra_info["node_model"] = node_model
-                extra_info["answers"] = answers
-                extra_info["questions"] = questions
-                extra_info["use_oracle_verifier"] = use_oracle_verifier
-                extra_info["example_id"] = example_id
-                extra_info["response_dict"] = []
-                extra_info["dataset"] = args.dataset
-                extra_info["instance_id"] = instance_id
-                extra_info["code_snippet"] = code_snippet
-                extra_info["early_stop"] = args.early_stop
-
-                # search
-                await search.search(args, extra_info, task_queue, meta_model, blocks, verifier_model)
+            print(len(tasks))
+            await tqdm_asyncio.gather(*tasks)
         elif 'aime24' in args.dataset:
             cot_instruction = "Please think step by step and then solve the task."
             # output_description = "Return ONLY an integer. DO NOT return anything other than the integer answer."
@@ -401,13 +443,14 @@ async def main(args):
 
             debate_role = ['Math Professor', 'Grade School Teacher']
 
-            dataset = load_dataset("cais/hle", split="test")
-            dataset = [item for item in dataset if item["category"] == "Math"]
+            # dataset = load_dataset("cais/hle", split="test")
+            dataset = json.load(open("dataset/hle_math200int_seed0.json"))
+            # dataset = [item for item in dataset if item["category"] == "Math"]
             examples = []
             for item in dataset:
                 examples.append({'problem': item['question'], 'answer': item['answer']})
 
-            examples = examples[:24]
+            # examples = examples[:24]
 
             extra_info["node_model"] = node_model
             extra_info["verifier_model"] = verifier_model
@@ -432,6 +475,66 @@ async def main(args):
             tasks = []
             for example_id, example in enumerate(examples):
 
+                if args.given_examples:
+                    if example_id not in args.given_examples:
+                        continue
+
+                _info = copy.deepcopy(extra_info)
+                tasks.append(run_task_with_semaphore(
+                    example, example_id, meta_model, node_model, verifier_model, n, args.dataset, _info,
+                    blocks, args.n_generation, args.save_dir, args.option, args.defer_verifier, args.debug_max
+                ))
+
+            print(len(tasks))
+            await tqdm_asyncio.gather(*tasks)
+        elif 'browsecomp-plus' in args.dataset:
+            cot_instruction = ("Thoroughly read the question and provided documents, reason step by step, "
+                               "and cite document evidence in your explanations whenever possible.")
+            output_description = ("Return ONLY the final answer requested by the question. "
+                                  "Keep it concise and grounded in the supplied documents.")
+            debate_role = ['Research Analyst 1', 'Research Analyst 2', 'Research Analyst 3']
+
+            dataset_path = Path("dataset/bcp_test.jsonl")
+            if not dataset_path.exists():
+                raise FileNotFoundError(f"browsecomp-plus data file not found at {dataset_path}")
+
+            examples = []
+            with dataset_path.open() as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    question = data["question"].strip()
+                    answer = data["answer"].strip()
+                    instance_identifier = data.get("query_id", len(examples))
+                    examples.append({
+                        'problem': question,
+                        'answer': answer,
+                        'instance_id': instance_identifier
+                    })
+
+            extra_info["node_model"] = node_model
+            extra_info["verifier_model"] = verifier_model
+            extra_info["output_description"] = output_description
+            extra_info["max_round"] = max_round
+            extra_info["max_sc"] = max_sc
+            extra_info["debate_role"] = debate_role
+            extra_info["cot_instruction"] = cot_instruction
+            extra_info["use_oracle_verifier"] = use_oracle_verifier
+            extra_info["dataset"] = args.dataset
+            extra_info["code_snippet"] = code_snippet
+            extra_info["early_stop"] = args.early_stop
+            extra_info["no_history"] = args.no_history
+
+            semaphore = asyncio.Semaphore(args.max_workers)
+
+            async def run_task_with_semaphore(*a, **kw):
+                async with semaphore:
+                    return await run_aime_search(*a, **kw)
+
+            tasks = []
+            for example_id, example in enumerate(examples):
                 if args.given_examples:
                     if example_id not in args.given_examples:
                         continue
@@ -469,7 +572,7 @@ async def main(args):
             extra_info["debate_role"] = debate_role
             extra_info["cot_instruction"] = cot_instruction
             extra_info["use_oracle_verifier"] = use_oracle_verifier
-            extra_info["dataset"] = args.dataset
+            extra_info["dataset"] = args.datasets
             extra_info["code_snippet"] = code_snippet
             extra_info["early_stop"] = args.early_stop
             extra_info["no_history"] = args.no_history
@@ -497,7 +600,7 @@ async def main(args):
             print(len(tasks))
             await tqdm_asyncio.gather(*tasks)
         elif "hanoi" in args.dataset:
-            from hanoi import load_hanoi, problem_template as cot_instruction, judge_prompt as hanoi_judge_prompt
+            from hanoi import load_hanoi, problem_template as cot_instruction
 
             debate_role = ["Expert Player 1", "Expert Player 2", "Expert Player 3"]
             output_description = ""

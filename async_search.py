@@ -6,7 +6,7 @@ import os
 import re
 import types
 from collections import namedtuple
-from typing import Tuple, List
+from typing import Tuple, List, Union
 
 import numpy as np
 import openai
@@ -28,6 +28,13 @@ from code_utils.diff_patch import apply_unified_diff
 client = openai.OpenAI()
 
 Info = namedtuple('Info', ['name', 'author', 'content', 'prompt', 'sub_tasks', 'agents', 'iteration_idx'])
+
+
+def is_swe_dataset(dataset_name: str) -> bool:
+    if not dataset_name:
+        return False
+    swe_tokens = ('swe_bench', 'workflow_search/swe', 'swe_test')
+    return any(token in dataset_name for token in swe_tokens)
 
 json_next_step_prompt = """{prev_info}Given the above, answer the following question: {instruction}
 
@@ -476,7 +483,7 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         except Exception as e:
             import traceback
             traceback.print_exc()
-            print(solution['code'])
+            # print(solution['code'])
             continue
 
         # TODO: can we somehow also log acc_oracle_verifier_list so that we can know how accurate acc_model_verifier_list is?
@@ -500,7 +507,7 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         print(f"mean acc_list:", np.mean(acc_list))
         print(f"bootstrap_confidence_interval: {fitness_str}")
 
-        if 'swe_bench' in dataset:
+        if is_swe_dataset(dataset):
             extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
@@ -601,6 +608,9 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
             next_solution = await get_json_response_from_gpt_reflect_local(copy.deepcopy(msg_list), meta_model, extra_info, option,
                                                                            code="" if n == 0 else cur_archive[-1]['code'])
 
+        if next_solution == "bad_request":
+            continue
+
         acc_list = []
         for _ in range(debug_max):
             try:  # in case the generated code is not correct
@@ -665,6 +675,9 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
 
                 continue
 
+        if next_solution == "bad_request":
+            continue
+
         if not acc_list:
             n -= 1  # rerun
             continue
@@ -688,8 +701,9 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
             next_solution["agents"] = agents
 
         next_solution["final_response"] = final_response
+        next_solution["name"] = next_solution["name"].replace(" ", "_").replace("/", "_")
 
-        if 'swe_bench' in dataset:
+        if is_swe_dataset(dataset):
             extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
@@ -736,7 +750,7 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         Reflexion_after_eval_prompt = get_reflexion_after_eval_local(option, extra_info["format_choice"], extra_info["no_decompose"],
                                                                      extra_info["no_meta_reward"])
 
-        if 'workflow_search' in dataset and 'swe_bench' in dataset:
+        if 'workflow_search' in dataset and is_swe_dataset(dataset):
             code_snippet = extra_info["code_snippet"]
             Reflexion_after_eval_prompt = f'Recall the requirement of original questions: \n\nGiven code_snippet \n\n{code_snippet}; Generate a patch following requirements: {AGENTLESS_REPAIR} \n\n Now please ' + Reflexion_after_eval_prompt + f'\n\nIMPORTANT Note: The above "code" entry is only for the code of your improved architecture and sub-tasks.'
             # For example: {EXAMPLE_META} # Add Example may make the output patch worse
@@ -786,6 +800,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         if next_solution == 'bad_request':
             print('bad_request; break fo now')
             break
+
+        next_solution["name"] = next_solution["name"].replace(" ", "_").replace("/", "_")
 
         # meta agent results html --------
         prompt_message = []

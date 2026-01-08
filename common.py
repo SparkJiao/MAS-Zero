@@ -17,9 +17,9 @@ from tqdm import tqdm
 from blocks.cot import COT
 from blocks.cot_sc import COT_SC
 from blocks.llm_debate import LLM_debate
+from code_utils.diff_patch import apply_unified_diff
 from sampler import get_model
 from shared_vars import get_global, add_to_global_cost
-from code_utils.diff_patch import apply_unified_diff
 
 Message = dict[str, Any]  # keys role, content
 MessageList = list[Message]
@@ -34,7 +34,14 @@ model_price_map = {
     },
     # follow aflow: "gpt-4o": {"prompt": 0.005, "completion": 0.015}
     # in https://github.com/geekan/MetaGPT/blob/main/metagpt/utils/token_counter.py
-
+    "gpt-5-nano": {
+        'prompt': 0.00005,
+        'completion': 0.0004,
+    },
+    "gpt-5": {
+        'prompt': 0.00125,
+        'completion': 0.010,
+    },
     "o3-mini": {
         'prompt': 0.55,
         'completion': 4.40
@@ -60,6 +67,18 @@ model_price_map = {
         "completion": 0,
     },
     "qwen3-30b-a3b": {
+        "prompt": 0,
+        "completion": 0,
+    },
+    "qwen3-30b-a3b-reasoning": {
+        "prompt": 0,
+        "completion": 0,
+    },
+    "qwen3-next-80b-reasoning": {
+        "prompt": 0,
+        "completion": 0,
+    },
+    "qwen3-235b-reasoning": {
         "prompt": 0,
         "completion": 0,
     }
@@ -294,7 +313,7 @@ async def get_json_response_from_gpt_local(
             sampler_return = await sampler(msg, temperature)
 
             # # TODO: we do not want to break here. If it is just excution, it must be runnable by keep retrying
-            if sampler_return == "" or debug_count > 5:  # bad request
+            if sampler_return == "" or debug_count > 2:  # bad request
                 json_dict = {key: "" for key in output_fields}
                 json_dict["error"] = "bad request. Please try again with higher temperature."
                 return json_dict
@@ -304,7 +323,7 @@ async def get_json_response_from_gpt_local(
             keys = json_dict.keys()
 
             is_valid_answer = True
-            if 'answer' in keys and len(json_dict['answer'].strip()) == 0:
+            if 'answer' in keys and len(str(json_dict['answer']).strip()) == 0:
                 is_valid_answer = False
 
             # Hacked by Fangkai to run Qwen3-235B
@@ -416,7 +435,7 @@ async def get_json_response_from_gpt_reflect_local(
                 sampler_return = await sampler(msg[-3:])  # [user, assistant, user]
             else:
                 sampler_return = await sampler(msg)
-            if sampler_return == "" or debug_count > 5:  # bad request
+            if sampler_return == "" or debug_count > 2:  # bad request
                 json_dict = "bad_request"
                 return json_dict
 
@@ -431,7 +450,7 @@ async def get_json_response_from_gpt_reflect_local(
 
             # TODO: consider constraint the json like above
             if 'name' in keys and 'thought' in keys and 'code' in keys:
-                if 'async def forward(self, taskInfo, extra_info):' in json_dict['code']:
+                if 'async def forward(self, taskInfo, extra_info)' in json_dict['code']:
                     try:
                         compile(json_dict['code'], "<string>", "exec")
                     except SyntaxError as e:
@@ -1042,6 +1061,26 @@ Respond with only "Yes" or "No" (without quotes). Do not include a rationale.
     Expression 1: %(question)s
     Expression 1: %(expression1)s
     Expression 2: %(expression2)s
+""".strip()
+
+BROWSECOMP_PLUS_TEMPLATE = """
+Judge whether the following [response] to [question] is correct or not based on the precise and unambiguous [correct_answer] below.
+
+[question]: {question}
+
+[response]: {response}
+
+Your judgement should be a json object. The requested keys and the corresponding criteria is as below:
+
+extracted_final_answer: The final exact answer extracted from the [response]. Put the extracted answer as 'None' if there is no exact, final answer to extract from the response.
+
+[correct_answer]: {correct_answer}
+
+reasoning: Explain why the extracted_final_answer is correct or incorrect based on [correct_answer], focusing only on if there are meaningful differences between [correct_answer] and the extracted_final_answer. Do not comment on any background to the problem, do not attempt to solve the problem, do not argue for any answer different than [correct_answer], focus only on whether the answers match.
+
+correct: Answer 'yes' if extracted_final_answer matches the [correct_answer] given above, or is within a small margin of error for numerical problems. Answer 'no' otherwise, i.e. if there if there is any inconsistency, ambiguity, non-equivalency, or if the extracted answer is incorrect.
+
+confidence: The extracted confidence score between 0|\%| and 100|\%| from [response]. Put 100 if there is no confidence score available.
 """.strip()
 
 

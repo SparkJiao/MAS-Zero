@@ -6,7 +6,46 @@ import re
 import subprocess
 from pathlib import Path
 import tempfile
+from typing import List
 
+#
+# def cleanup_swebench_containers_for_run(run_id: str) -> List[str]:
+#     """
+#     Remove existing Docker containers that may conflict with this SWE-bench run.
+#     Only removes containers whose name contains BOTH 'sweb.eval' and the run_id.
+#
+#     Returns:
+#         removed_container_ids: list of container ids removed (may be empty)
+#     """
+#     # Find containers that match both filters (safe: only this run_id)
+#     ps_cmd = [
+#         "docker", "ps", "-a", "-q",
+#         "--filter", "name=sweb.eval",
+#         "--filter", f"name={run_id}",
+#     ]
+#     try:
+#         res = subprocess.run(ps_cmd, capture_output=True, text=True, check=False)
+#     except FileNotFoundError:
+#         print("[WARN] docker command not found; skip cleanup.")
+#         return []
+#
+#     if res.returncode != 0:
+#         print(f"[WARN] docker ps failed, skip cleanup.\nstdout={res.stdout}\nstderr={res.stderr}")
+#         return []
+#
+#     ids = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+#     if not ids:
+#         return []
+#
+#     # Force remove them
+#     rm_cmd = ["docker", "rm", "-f", *ids]
+#     rm_res = subprocess.run(rm_cmd, capture_output=True, text=True, check=False)
+#     if rm_res.returncode != 0:
+#         print(f"[WARN] docker rm failed.\nstdout={rm_res.stdout}\nstderr={rm_res.stderr}")
+#     else:
+#         print(f"[INFO] Removed conflicting containers: {ids}")
+#     return ids
+#
 
 def run_swebench_evaluation(judge_path: str, instance_id: str, extracted_answer: str, technique: str, solution_name, code_snippet=None):
     """
@@ -18,48 +57,73 @@ def run_swebench_evaluation(judge_path: str, instance_id: str, extracted_answer:
         num_workers (int): Number of parallel workers for evaluation
         run_id (str): Unique identifier for this evaluation run
     """
-    
-    #TODO: generated number can be wrong? double chexck 04/10
+
+    # TODO: generated number can be wrong? double chexck 04/10
     computed_header = extract_hunks_and_recalculate_headers(extracted_answer)
-    print(f"computed_header: {computed_header}")
+    # print(f"computed_header: {computed_header}")
     extracted_answer = replace_hunk_headers_with_computed_counts(extracted_answer, computed_header)
     extracted_answer = normalize_diff_string(extracted_answer)
-    #TODO: one might also check the starting line, but I did not do it
-    print(f"updated extracted_answer: {extracted_answer}")
+    # TODO: one might also check the starting line, but I did not do it
+    # print(f"updated extracted_answer: {extracted_answer}")
     # exit()
 
     prediction = {
-    "instance_id": instance_id,
-    "model_patch": extracted_answer,
-    "model_name_or_path": "gpt-4o",
+        "instance_id": instance_id,
+        "model_patch": extracted_answer,
+        "model_name_or_path": "gpt-4o",
     }
 
-    path_to_prediction = judge_path+f'_{instance_id}_{solution_name}.json'
+    path_to_prediction = judge_path + f'_{instance_id}_{solution_name}.json'
     print('path_to_prediction: ', path_to_prediction)
 
     # Create a list with the prediction
     predictions_list = [prediction]
-    
+
     # Write as a JSON array
     # TODO: debugged still needed
     with open(path_to_prediction, 'w') as f:
         json.dump(predictions_list, f, indent=4)
 
     # Construct the command
-    num_workers = 1# Construct the command
+    num_workers = 1  # Construct the command
     run_id = f'{instance_id}_{technique}_{solution_name}'
     run_id = run_id.replace(' ', '_').replace('-', '_').replace('(', '_').replace(')', '_')
-    print('run_id: ',run_id)
-    
+    print('run_id: ', run_id)
+
+    # read the report
+    # prefix = instance_id.replace('-', '_')
+    # result_path = os.path.dirname(path_to_prediction) + f'/gpt-4o.{prefix}__.json'
+    result_path = os.path.join(os.path.dirname(path_to_prediction), f"gpt-4o.{run_id}.json")
+    # f'/export/xgen-finance/meta_agent/planing/results/question/meta_agent/{technique}/swe_bench/logs/run_evaluation/{run_id}/gpt-4o//report.json'
+    print('result_path: ', result_path)
+
+    # cleanup_swebench_containers_for_run(run_id)
+
     cmd = [
         "python", "-m", "swebench.harness.run_evaluation",
-        "--dataset_name", 'princeton-nlp/SWE-bench_Lite',
+        "--dataset_name", 'dataset/swe_test.jsonl',
         "--predictions_path", path_to_prediction,
         "--max_workers", str(num_workers),
-        "--run_id", str(run_id)
+        "--run_id", str(run_id),
+        "--report_path", os.path.dirname(path_to_prediction),
+        "--cache_level", "instance",
+        "--clean", "False"
     ]
-    
-    while True: #if error, let's rerun
+    print('result_path: ', result_path)
+
+    if os.path.exists(result_path):
+        with open(result_path, "r") as f:
+            data = json.load(f)
+        if len(data['error_ids']) == 0:
+            print(f"Load result from {result_path} directly")
+            score = float(data['resolved_instances'])
+            return score
+        else:
+            print(f"Last run from {result_path} failed. Retry.")
+
+    cnt = 0
+    score = 0
+    while cnt < 10:  # if error, let's rerun
         try:
             # Run the command and capture output
             result = subprocess.run(
@@ -70,29 +134,37 @@ def run_swebench_evaluation(judge_path: str, instance_id: str, extracted_answer:
             )
             print("Evaluation completed successfully")
             print("Output:", result.stdout)
-            break
+            # break
             # return result.stdout
         except subprocess.CalledProcessError as e:
             print("Error running evaluation:")
             print("Error output:", e.stderr)
-            print('Rerun') #TODO: cannot rerun, it will just exit
-            raise e
+            print('Rerun')  # TODO: cannot rerun, it will just exit
+            # raise e
+            cnt += 1
+        except Exception as e:
+            print(f"Unexpected problem: {e}")
+            cnt += 1
 
-# read the report 
-    result_path = f'/export/xgen-finance/meta_agent/planing/results/question/meta_agent/{technique}/swe_bench/logs/run_evaluation/{run_id}/gpt-4o/{instance_id}/report.json'
-    print('result_path: ',result_path)
+        if os.path.exists(result_path):
+            # score, percentage, passed_tests, total_tests = compute_success_percentage(result_path)
+            with open(result_path, "r") as f:
+                data = json.load(f)
+            score = float(data['resolved_instances'])
+            if len(data['error_ids']):
+                cnt += 1
+                continue
+            return score
+        else:
+            print(f"Report file not found at {result_path}")
+            # score = 0.0
+            # percentage = 0.0
+            cnt += 1
+            continue
+        # return score, percentage, passed_tests, total_tests
 
-    total_tests = 0
-    passed_tests = 0
-    if os.path.exists(result_path):
-        score, percentage, passed_tests, total_tests = compute_success_percentage(result_path)
+    return score
 
-    else:
-        print(f"Report file not found at {result_path}")
-        score = 0.0
-        percentage = 0.0
-
-    return score, percentage, passed_tests, total_tests
 
 def compute_success_percentage(json_path):
     with open(json_path, "r") as f:
@@ -115,12 +187,13 @@ def compute_success_percentage(json_path):
 
         percentage = (passed_tests / total_tests) * 100 if total_tests > 0 else 0.0
 
-        print(f"{instance_id} → {passed_tests} passed test | {total_tests} total_tests | {passed_tests}/{total_tests} passed → {percentage:.1f}% | resolved: {resolved}")
+        print(
+            f"{instance_id} → {passed_tests} passed test | {total_tests} total_tests | {passed_tests}/{total_tests} passed → {percentage:.1f}% | resolved: {resolved}")
 
         if resolved:
             return 1.0, percentage, passed_tests, total_tests
         else:
-            return 0.0, percentage, passed_tests, total_tests   
+            return 0.0, percentage, passed_tests, total_tests
 
 
 def replace_hunk_headers_with_computed_counts(diff_text, hunk_infos):
@@ -153,6 +226,7 @@ def replace_hunk_headers_with_computed_counts(diff_text, hunk_infos):
             output_lines.append(line)
 
     return "\n".join(output_lines)
+
 
 def extract_hunks_and_recalculate_headers(diff_text):
     """
@@ -216,6 +290,7 @@ def extract_hunks_and_recalculate_headers(diff_text):
 
     return results
 
+
 def compute_hunk_line_counts(hunk_lines):
     """
     Given a list of lines in a diff hunk body (excluding the header),
@@ -243,9 +318,8 @@ def compute_hunk_line_counts(hunk_lines):
             continue
 
     y = num_context + num_removed  # lines from original file
-    b = num_context + num_added    # lines from new file
+    b = num_context + num_added  # lines from new file
     return y, b
-
 
 
 def check_diff_file(file_path):
@@ -307,6 +381,7 @@ def check_diff_file(file_path):
 
     return errors, warnings
 
+
 def dry_run_patch(file_path):
     try:
         result = subprocess.run(["patch", "--dry-run", "-p1"], input=open(file_path, "rb").read(),
@@ -318,11 +393,10 @@ def dry_run_patch(file_path):
     return None
 
 
-
 def print_and_raise_error(errors, warnings, dry_run_result, diff_content, temp_path):
     # print(f"Checking: {diff_content} in {temp_path}")
     print(f"Checking: {temp_path}")
-   
+
     if errors:
         print(f"\n[ERROR] Found {len(errors)} issues:")
         for line_num, msg in errors:
@@ -347,8 +421,6 @@ def print_and_raise_error(errors, warnings, dry_run_result, diff_content, temp_p
         print("\n[OK] Patch applies cleanly (dry-run passed).")
 
 
-
-
 def normalize_diff_string(diff_content: str) -> str:
     # Normalize all line endings to \n
     content = diff_content.replace("\r\n", "\n").replace("\r", "\n")
@@ -360,40 +432,31 @@ def normalize_diff_string(diff_content: str) -> str:
 
 
 def sanity_check(diff_content):
-
     # diff_content = normalize_diff_string(diff_content)
-
 
     # with tempfile.NamedTemporaryFile("w+", delete=True, suffix=".diff") as temp_file:
     temp_path_open = "/export/xgen-finance/meta_agent/planing/results/question/meta_agent/cot/swe_bench/log/sympy__sympy-24909_plan/gpt-4o/sympy__sympy-24909/patch.diff"
     temp_path = "./temp.diff"
 
-
     # temp_path_open = "./temp_open.diff"
     # with open(temp_path_open, "w") as temp_file:
     #     temp_file.write(diff_content)
-        # temp_path = temp_file.name
+    # temp_path = temp_file.name
     Path(temp_path).write_text(diff_content or "")
-
 
     with open(temp_path_open) as f1, open(temp_path) as f2:
         print(f1.read() == f2.read())  # Check if identical
-        
+
         import difflib
         diff1 = f1.read().splitlines()
         diff2 = f2.read().splitlines()
         for line in difflib.unified_diff(diff1, diff2, fromfile=temp_path_open, tofile=temp_path):
             print(line)
 
-
     errors, warnings = check_diff_file(temp_path_open)
     dry_run_result = dry_run_patch(temp_path_open)
     print_and_raise_error(errors, warnings, dry_run_result, diff_content, temp_path_open)
 
-
-        
     errors, warnings = check_diff_file(temp_path)
     dry_run_result = dry_run_patch(temp_path)
     print_and_raise_error(errors, warnings, dry_run_result, diff_content, temp_path)
-
-
