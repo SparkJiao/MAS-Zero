@@ -131,7 +131,7 @@ class DataScorer:
         else:
             try:
                 match = re.search(ANSWER_PATTERN, response_text)
-                extracted_answer = match.group(1) if match else None
+                extracted_answer = match.group(1) if match else ""
                 extracted_answer = extracted_answer.strip()
             except NameError as e:
                 import traceback

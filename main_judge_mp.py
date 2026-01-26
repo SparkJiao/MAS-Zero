@@ -242,7 +242,8 @@ model_sampler_map = {
         model="deepseek-ai/DeepSeek-V3"
     ),
     "qwen3-next-80b-reasoning": VllmChatCompletionSampler(model="qwen3-next-80b-reasoning", response_format="xml", max_tokens=16384),
-    "qwen3-30b-a3b-reasoning": VllmChatCompletionSampler(model="qwen3-30b-a3b-reasoning", response_format="xml", max_tokens=65536)
+    "qwen3-30b-a3b-reasoning": VllmChatCompletionSampler(model="qwen3-30b-a3b-reasoning", response_format="xml", max_tokens=65536),
+    "gpt-oss-120b": VllmChatCompletionSampler(model="gpt-oss-120b", response_format="json", max_tokens=131072),
 }
 
 

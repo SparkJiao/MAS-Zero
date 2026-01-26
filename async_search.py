@@ -340,7 +340,7 @@ async def evaluate_forward_fn(extra_info, forward_str):
     #     results.append(res)
 
     prompt_messages = [res.prompt for q_idx, res in enumerate(results)]
-    response_texts = [str(res.content) for q_idx, res in enumerate(results)]
+    response_texts = [str(res.content) if res.content is not None else '' for q_idx, res in enumerate(results)]
     if not extra_info["no_decompose"]:
         sub_tasks = [res.sub_tasks for q_idx, res in enumerate(results)]
         sub_tasks_text = sub_tasks[0]  # only one sample
@@ -512,7 +512,11 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
         else:
-            extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
+            extracted_answer = re.search(ANSWER_PATTERN, final_response[0])
+            if extracted_answer is not None:
+                extracted_answer = extracted_answer.group(1)
+            else:
+                extracted_answer = ""
 
         if '[TOO_HARD]' in extracted_answer:  # we cannot add [TOO_HARD] in memory
             extracted_answer = extracted_answer[:extracted_answer.index('[TOO_HARD]')]
@@ -708,7 +712,12 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
         else:
-            extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
+            # extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
+            extracted_answer = re.search(ANSWER_PATTERN, final_response[0])
+            if extracted_answer is not None:
+                extracted_answer = extracted_answer.group(1)
+            else:
+                extracted_answer = ""
 
         if '[TOO_HARD]' in extracted_answer:
             extracted_answer = extracted_answer[:extracted_answer.index('[TOO_HARD]')]

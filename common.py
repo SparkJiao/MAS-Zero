@@ -81,6 +81,10 @@ model_price_map = {
     "qwen3-235b-reasoning": {
         "prompt": 0,
         "completion": 0,
+    },
+    "gpt-oss-120b": {
+        "prompt": 0,
+        "completion": 0,
     }
 }
 
@@ -222,7 +226,9 @@ async def async_check_equality(sampler: SamplerBase, expr1: str, expr2: str, use
     else:  # use model verifier
         raise NotImplementedError
 
-    return response.lower().strip() == "yes"
+    if response is not None:
+        return str(response).lower().strip() == "yes"
+    return False
 
 
 def _pack_message(role: str, content: Any):

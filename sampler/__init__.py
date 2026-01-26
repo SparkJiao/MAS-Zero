@@ -18,7 +18,8 @@ model_init_map = {
     "qwen3-235b": partial(VllmChatCompletionSampler, model="Qwen/Qwen3-235B-A22B-Instruct-2507-tput"),
     "deepseek-v3": partial(ToChatCompletionSampler, model="deepseek-ai/DeepSeek-V3"),
     "qwen3-next-80b-reasoning": partial(VllmChatCompletionSampler, model="qwen3-next-80b-reasoning"),
-    "qwen3-235b-reasoning": partial(VllmChatCompletionSampler, model="Qwen/Qwen3-235B-A22B-Thinking-2507")
+    "qwen3-235b-reasoning": partial(VllmChatCompletionSampler, model="Qwen/Qwen3-235B-A22B-Thinking-2507"),
+    "gpt-oss-120b": partial(VllmChatCompletionSampler, model="gpt-oss-120b")
 }
 
 AVAILABLE_MODELS = {}
