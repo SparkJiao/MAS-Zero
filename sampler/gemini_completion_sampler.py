@@ -327,3 +327,40 @@ class AsyncGeminiChatCompletionSamplerAiohttp:
                 if trial == 3:
                     print("Persistent error after retries:", e)
                     return "", None
+
+
+if __name__ == "__main__":
+    import asyncio
+    import os
+
+    # Ensure GEMINI_API_KEY is set in your environment
+    api_key = os.environ.get("GEMINI_API_KEY")
+    messages = [{"role": "user", "content": "Say 'Hello World' in a creative way."}]
+
+    # 1. Test Sync Sampler
+    print("Testing GeminiChatCompletionSampler (Sync)...")
+    try:
+        sync_sampler = GeminiChatCompletionSampler(api_key=api_key, model="gemini-2.5-flash")
+        text, usage = sync_sampler(messages)
+        print(f"Response: {text}")
+        print(f"Usage: {usage}\n")
+    except NameError:
+        print("GeminiChatCompletionSampler not found in scope.\n")
+
+    # 2. Test Async Sampler
+    async def test_async():
+        print("Testing AsyncGeminiChatCompletionSamplerAiohttp (Async)...")
+        sampler = AsyncGeminiChatCompletionSamplerAiohttp(
+            api_key=api_key, 
+            model="gemini-2.5-flash",
+            response_format="normal"
+        )
+        try:
+            text, usage = await sampler(messages)
+            print(f"Response: {text}")
+            print(f"Usage: {usage}")
+        finally:
+            await sampler.aclose()
+
+    asyncio.run(test_async())
+
