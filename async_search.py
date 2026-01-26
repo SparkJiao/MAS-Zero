@@ -36,6 +36,7 @@ def is_swe_dataset(dataset_name: str) -> bool:
     swe_tokens = ('swe_bench', 'workflow_search/swe', 'swe_test')
     return any(token in dataset_name for token in swe_tokens)
 
+
 json_next_step_prompt = """{prev_info}Given the above, answer the following question: {instruction}
 
 If the question is too complicated or information is missing, you still need to give your best answer but add \
@@ -483,7 +484,7 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
         except Exception as e:
             import traceback
             traceback.print_exc()
-            # print(solution['code'])
+            print(solution['code'])
             continue
 
         # TODO: can we somehow also log acc_oracle_verifier_list so that we can know how accurate acc_model_verifier_list is?

@@ -329,7 +329,13 @@ async def get_json_response_from_gpt_local(
                 return json_dict
 
             response_text, usage = sampler_return
-            json_dict = json.loads(response_text)
+            try:
+                json_dict = json.loads(response_text)
+            except Exception as exp1:
+                try:
+                    json_dict = eval(response_text)
+                except Exception as exp2:
+                    raise exp1
             keys = json_dict.keys()
 
             is_valid_answer = True
