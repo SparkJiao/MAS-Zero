@@ -16,7 +16,7 @@ from utils import load_questions
 
 
 def determine_format(model_name):
-    json_model = ['gpt']
+    json_model = ['gpt', 'gemini']
     xml_model = ['qwen', 'llama-3.3', 'deepseek']
 
     if any(kw in model_name for kw in json_model):

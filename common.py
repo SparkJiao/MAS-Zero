@@ -85,6 +85,10 @@ model_price_map = {
     "gpt-oss-120b": {
         "prompt": 0,
         "completion": 0,
+    },
+    "gemini-2.5-pro": {
+        "prompt": 0,
+        "completion": 0,
     }
 }
 

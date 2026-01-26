@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Any
 
@@ -20,7 +21,10 @@ class ChatCompletionSampler(SamplerBase):
             max_tokens: int = 1024,
     ):
         self.api_key_name = "OPENAI_API_KEY"
-        self.client = OpenAI()
+        self.client = OpenAI(
+            api_key=os.getenv(self.api_key_name, ""),
+            base_url=os.getenv("OPENAI_BASE_URL", None)
+        )
         # using api_key=os.environ.get("OPENAI_API_KEY")  # please set your API_KEY
         self.model = model
         self.system_message = system_message
@@ -113,8 +117,12 @@ class AsyncChatCompletionSampler(ChatCompletionSampler):
             response_format: str = "json",
     ):
         self.api_key_name = "OPENAI_API_KEY"
-        self.client = AsyncOpenAI()
+        self.client = AsyncOpenAI(
+            api_key=os.getenv(self.api_key_name, ""),
+            base_url=os.getenv("OPENAI_BASE_URL", None)
+        )
         # using api_key=os.environ.get("OPENAI_API_KEY")  # please set your API_KEY
+        # print(os.getenv("OPENAI_BASE_URL", None))
         self.model = model
         self.system_message = system_message
         self.temperature = temperature
@@ -158,6 +166,8 @@ class AsyncChatCompletionSampler(ChatCompletionSampler):
                 return ""
             except Exception as e:
                 exception_backoff = 2 ** trial  # expontial back off
+                import traceback
+                traceback.print_exc()
                 print(
                     f"Rate limit exception so wait and retry {trial} after {exception_backoff} sec",
                     e,
@@ -168,3 +178,36 @@ class AsyncChatCompletionSampler(ChatCompletionSampler):
                     print("Bad Request Error", e)
                     return ""
             # unknown error shall throw exception
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        print("OPENAI_API_KEY is not set; skipping sampler tests.")
+    else:
+        messages = [{"role": "user", "content": "Say 'Hello World' in a creative way."}]
+
+        print("Testing ChatCompletionSampler (Sync)...")
+        try:
+            sync_sampler = ChatCompletionSampler(model="gemini-2.5-pro")
+            text, usage = sync_sampler(messages, response_format="normal")
+            print(f"Response: {text}")
+            print(f"Usage: {usage}\n")
+        except Exception as e:
+            print("Sync sampler test failed:", e)
+
+
+        async def test_async():
+            print("Testing AsyncChatCompletionSampler (Async)...")
+            sampler = AsyncChatCompletionSampler(model="gemini-2.5-pro", response_format="normal")
+            try:
+                text, usage = await sampler(messages, response_format="normal")
+                print(f"Response: {text}")
+                print(f"Usage: {usage}")
+            except Exception as e:
+                print("Async sampler test failed:", e)
+
+
+        asyncio.run(test_async())

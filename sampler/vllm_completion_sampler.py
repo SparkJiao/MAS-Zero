@@ -180,11 +180,11 @@ class AsyncChatCompletionSampler(ChatCompletionSampler):
 
 
 if __name__ == '__main__':
-    client = AsyncChatCompletionSampler(model="qwen3-30b-a3b")
+    client = AsyncChatCompletionSampler(model="gpt-oss-120b", response_format="json")
 
     history = [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "What is the capital of France?"},
+        {"role": "user", "content": "What is the capital of France? Output a json string with single field: `capital`."},
     ]
 
     results = asyncio.run(client(history))

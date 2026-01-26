@@ -19,7 +19,8 @@ model_init_map = {
     "deepseek-v3": partial(ToChatCompletionSampler, model="deepseek-ai/DeepSeek-V3"),
     "qwen3-next-80b-reasoning": partial(VllmChatCompletionSampler, model="qwen3-next-80b-reasoning"),
     "qwen3-235b-reasoning": partial(VllmChatCompletionSampler, model="Qwen/Qwen3-235B-A22B-Thinking-2507"),
-    "gpt-oss-120b": partial(VllmChatCompletionSampler, model="gpt-oss-120b")
+    "gpt-oss-120b": partial(VllmChatCompletionSampler, model="gpt-oss-120b"),
+    "gemini-2.5-pro": partial(AsyncChatCompletionSampler, model="gemini-2.5-pro")
 }
 
 AVAILABLE_MODELS = {}

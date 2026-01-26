@@ -222,7 +222,7 @@ model_sampler_map = {
         model="o3-mini",
     ),
     "gpt-4o_chatgpt": ChatCompletionSampler(
-        model="gpt-4o",
+        model="gpt-4o", max_tokens=8192
     ),
     "gpt-5-nano": ChatCompletionSampler(model="gpt-5-nano-2025-08-07", temperature=1.0),
     "gpt-5": ChatCompletionSampler(model="gpt-5-2025-08-07", temperature=1.0, max_tokens=32768),
@@ -244,6 +244,7 @@ model_sampler_map = {
     "qwen3-next-80b-reasoning": VllmChatCompletionSampler(model="qwen3-next-80b-reasoning", response_format="xml", max_tokens=16384),
     "qwen3-30b-a3b-reasoning": VllmChatCompletionSampler(model="qwen3-30b-a3b-reasoning", response_format="xml", max_tokens=65536),
     "gpt-oss-120b": VllmChatCompletionSampler(model="gpt-oss-120b", response_format="json", max_tokens=131072),
+    "gemini-2.5-pro": ChatCompletionSampler(model="gemini-2.5-pro", max_tokens=32768)
 }
 
 
