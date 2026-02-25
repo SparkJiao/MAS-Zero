@@ -83,11 +83,13 @@ class ChatCompletionSampler(SamplerBase):
                     "model": self.model,
                     "messages": message_list,
                     "max_tokens": self.max_tokens,
-                    "temperature": temperature if temperature is not None else self.temperature
+                    "temperature": temperature if temperature is not None else self.temperature,
+                    "stream": False,
                 }
 
                 # 发送同步请求
-                response = requests.post(self.url_base, headers=headers, json=payload, timeout=7200)
+                response = requests.post(self.url_base, headers=headers, data=json.dumps(payload), timeout=7200)
+                # print(response.headers)
 
                 if response.status_code == 200:
                     response = response.json()
@@ -139,7 +141,8 @@ class AsyncChatCompletionSampler(ChatCompletionSampler):
                     "model": self.model,
                     "messages": message_list,
                     "max_tokens": self.max_tokens,
-                    "temperature": temperature if temperature is not None else self.temperature
+                    "temperature": temperature if temperature is not None else self.temperature,
+                    "stream": False,
                 }
                 # 异步请求
                 async with aiohttp.ClientSession() as session:

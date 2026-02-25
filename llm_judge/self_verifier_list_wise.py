@@ -142,11 +142,11 @@ def run_self_verifier(post_process_path, log_path, score_path, responses, sample
         with open(post_process_path, 'w') as json_file:
             json.dump(datas, json_file, indent=4)
 
-    if os.path.exists(score_path):
-        with open(score_path, 'r') as json_file:
-            scores = json.load(json_file)
-    else:
-        scores = None
+    # if os.path.exists(score_path):
+    #     with open(score_path, 'r') as json_file:
+    #         scores = json.load(json_file)
+    # else:
+    #     scores = None
 
     problem = datas[0]["problem"]  # all problem are the same
 
@@ -222,8 +222,12 @@ def run_self_verifier(post_process_path, log_path, score_path, responses, sample
     # print('msg: ',msg)
 
     scores = None  # recompute
+    selection = 0
     if scores is None:
+        cnt = 0
         while True:
+            if cnt > 3:
+                break
             try:
                 response, _ = sampler(msg)
                 json_dict = json.loads(response)
@@ -233,16 +237,40 @@ def run_self_verifier(post_process_path, log_path, score_path, responses, sample
                     thinking = json_dict['thinking']
                     break
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 print(f'Error: {e}')
+                print(f"Response: {response}")
+                cnt += 1
 
         # print('selection: ', thinking, selection)
 
         with open(score_path, 'w') as json_file:
             json.dump(json_dict, json_file, indent=4)
-
     else:
         selection = scores
 
     # exit()
 
     return selection
+
+
+def load_selection(score_path):
+    if not os.path.exists(score_path):
+        raise FileNotFoundError(f"Score file not found: {score_path}")
+
+    with open(score_path, "r") as json_file:
+        data = json.load(json_file)
+
+    if isinstance(data, dict):
+        selection = data.get("selection", None)
+    else:
+        selection = data
+
+    if selection is None:
+        raise ValueError(f"Missing selection in score file: {score_path}")
+
+    try:
+        return int(selection)
+    except Exception as e:
+        raise ValueError(f"Invalid selection in score file: {score_path}") from e

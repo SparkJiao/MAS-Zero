@@ -1,10 +1,12 @@
 import argparse
+import ast
 import copy
 import json
 import os
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 
 from common import EQUALITY_TEMPLATE, MCQ_EQUALITY_TEMPLATE, ANSWER_PATTERN, BROWSECOMP_PLUS_TEMPLATE
 from llm_judge import self_verifier_list_wise
@@ -21,6 +23,174 @@ try:
     sys.stderr.reconfigure(line_buffering=True)
 except Exception:
     pass
+
+
+def is_stock_dataset(dataset_name: str) -> bool:
+    if not dataset_name:
+        return False
+    return "stocks_synthetic" in dataset_name.lower()
+
+
+_STOCK_EVAL_DIR = Path(__file__).resolve().parent / "stocks_synthetic_dataset" / "evaluate"
+if _STOCK_EVAL_DIR.exists():
+    sys.path.append(str(_STOCK_EVAL_DIR))
+try:
+    from safe_code_executor import SafeCodeExecutor
+except Exception:
+    SafeCodeExecutor = None
+
+
+def _extract_stock_answer_blob(response_text: str) -> str:
+    if not response_text:
+        return ""
+    lowered = response_text.lower()
+    idx = lowered.rfind("answer:")
+    if idx == -1:
+        return response_text.strip()
+    return response_text[idx + len("answer:"):].strip()
+
+
+def _try_parse_mapping(text: str):
+    if not text:
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(text)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _parse_stock_model_output(response_text: str) -> dict:
+    answer_blob = _extract_stock_answer_blob(response_text)
+    parsed = _try_parse_mapping(answer_blob)
+    if parsed is None:
+        start = answer_blob.find("{")
+        end = answer_blob.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            parsed = _try_parse_mapping(answer_blob[start:end + 1])
+
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("output"), dict):
+            output_block = parsed["output"]
+            return {
+                "answer": output_block.get("answer"),
+                "code": output_block.get("code"),
+                "raw_answer": answer_blob,
+            }
+        return {
+            "answer": parsed.get("answer", parsed.get("final_answer")),
+            "code": parsed.get("code"),
+            "raw_answer": answer_blob,
+        }
+
+    code = None
+    code_match = re.search(r"```(?:python)?\n(.*?)```", answer_blob, re.DOTALL | re.IGNORECASE)
+    if code_match:
+        code = code_match.group(1).strip()
+        answer_blob = (answer_blob[:code_match.start()] + answer_blob[code_match.end():]).strip()
+
+    if code is None:
+        code_marker = re.search(r"(?is)\bcode\s*:\s*", answer_blob)
+        if code_marker:
+            code = answer_blob[code_marker.end():].strip()
+            answer_blob = answer_blob[:code_marker.start()].strip()
+
+    return {
+        "answer": None,
+        "code": code,
+        "raw_answer": answer_blob,
+    }
+
+
+def _extract_reference_answer(reference):
+    if isinstance(reference, dict):
+        ref = reference.get("answer", [])
+        if isinstance(ref, dict):
+            ref = ref.get("answer", [])
+        return ref or []
+    return reference or []
+
+
+def _evaluate_direct_answer(model_answer, reference_answer):
+    if not reference_answer:
+        return False, 0
+
+    partial_count = 0
+    for name in reference_answer:
+        if isinstance(model_answer, list):
+            if name in model_answer:
+                partial_count += 1
+        else:
+            if name in str(model_answer):
+                partial_count += 1
+
+    return partial_count == len(reference_answer), partial_count
+
+
+def _evaluate_code_output(code, reference_answer, executor):
+    if not code or executor is None:
+        return False, False, True
+
+    old_stdout = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    try:
+        exec_result = executor.execute(code, inputs={})
+    finally:
+        sys.stdout.close()
+        sys.stdout = old_stdout
+
+    if not exec_result.get("success", False):
+        return False, False, True
+
+    result = exec_result.get("result")
+    code_answer = None
+    if isinstance(result, dict):
+        code_answer = result.get("answer")
+    else:
+        code_answer = result
+
+    if code_answer is None:
+        return False, False, True
+
+    if isinstance(code_answer, str):
+        if code_answer in reference_answer:
+            is_full = len(reference_answer) == 1
+            return is_full, True, False
+        return False, False, False
+
+    if isinstance(code_answer, list):
+        if set(code_answer) == set(reference_answer):
+            return True, False, False
+
+    return False, False, False
+
+
+def _evaluate_stock_candidate(correct_answer, candidate, executor):
+    reference_answer = _extract_reference_answer(correct_answer)
+
+    model_answer = candidate.get("answer")
+    if isinstance(model_answer, dict) and "answer" in model_answer:
+        model_answer = model_answer["answer"]
+    if model_answer is None:
+        model_answer = candidate.get("raw_answer", "")
+
+    direct_full, partial_count = _evaluate_direct_answer(model_answer, reference_answer)
+    direct_partial = partial_count > 0 and not direct_full
+
+    code_full, code_partial, code_failed = _evaluate_code_output(candidate.get("code"), reference_answer, executor)
+
+    metrics = {
+        "direct_full": int(direct_full),
+        "direct_partial": int(direct_partial),
+        "code_full": int(code_full),
+        "code_partial": int(code_partial),
+        "code_failed": int(code_failed),
+    }
+
+    return (direct_full or code_full), metrics
 
 
 def rule_equality(correct, candidate):
@@ -108,14 +278,19 @@ def check_equality(dataset, question, correct, candidate, cfg):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
-
+        cnt = 0
         while True:
+            if cnt > 3:
+                json_dict = {'equal': 'no'}
+                break
             try:
                 response, _ = equality_checker(msg)
                 json_dict = json.loads(response)
                 break
             except Exception as e:
+                print(f"Entering here ========================= {cnt}")
                 print(f'Error: {e}')
+                cnt += 1
 
         print(f'json_dict: {json_dict}')
         score = json_dict['equal'].lower().strip() == "yes"
@@ -244,6 +419,7 @@ model_sampler_map = {
     "qwen3-next-80b-reasoning": VllmChatCompletionSampler(model="qwen3-next-80b-reasoning", response_format="xml", max_tokens=16384),
     "qwen3-30b-a3b-reasoning": VllmChatCompletionSampler(model="qwen3-30b-a3b-reasoning", response_format="xml", max_tokens=65536),
     "gpt-oss-120b": VllmChatCompletionSampler(model="gpt-oss-120b", response_format="json", max_tokens=131072),
+    # "gpt-oss-120b": ChatCompletionSampler(model="gpt-oss-120b", max_tokens=131072, response_format="json"),
     "gemini-2.5-pro": ChatCompletionSampler(model="gemini-2.5-pro", max_tokens=32768)
 }
 
@@ -261,6 +437,7 @@ def _process_one_example(example_id: int, cfg: dict):
     option = cfg['option']
     prm_model_path = cfg.get('prm_model_path', None)
     skip_eval = cfg.get('skip_eval', False)
+    pipeline_stage = cfg.get('pipeline_stage', 'end_to_end')
 
     exp_cfg = copy.deepcopy(cfg)
     exp_cfg['example_id'] = example_id
@@ -279,6 +456,16 @@ def _process_one_example(example_id: int, cfg: dict):
     equality_checker = model_sampler_map['gpt-4o_chatgpt']
     sampler = model_sampler_map[model]
 
+    is_stock = is_stock_dataset(dataset)
+    stock_executor = SafeCodeExecutor(timeout=30) if is_stock and SafeCodeExecutor else None
+    stock_metrics = {
+        "direct_full": 0,
+        "direct_partial": 0,
+        "code_full": 0,
+        "code_partial": 0,
+        "code_failed": 0,
+    }
+
     special_msgs = []
     lines_to_write = []
     is_correct = False
@@ -290,6 +477,8 @@ def _process_one_example(example_id: int, cfg: dict):
                 responses = json.load(json_file)
         except Exception:
             special_msgs.append(f'example_id {example_id} response file {response_path} does not exisit')
+            if is_stock:
+                return example_id, 0, special_msgs, lines_to_write, stock_metrics
             return example_id, 0, special_msgs, lines_to_write
 
         if len(responses) < max_response_per_sample:
@@ -307,7 +496,9 @@ def _process_one_example(example_id: int, cfg: dict):
             if '<TOO_HARD>' in filter_response:
                 filter_response = filter_response[:filter_response.index('<TOO_HARD>')]
 
-            if 'swe' not in dataset:
+            if is_stock:
+                extracted = _parse_stock_model_output(filter_response)
+            elif 'swe' not in dataset:
                 match = re.search(ANSWER_PATTERN, filter_response)
                 extracted = match.group(1) if match else None
 
@@ -316,7 +507,10 @@ def _process_one_example(example_id: int, cfg: dict):
                     extracted = filter_response.rsplit("Answer:", 1)[1]
                 else:
                     extracted = None
-            extracted_answers.append(extracted.strip() if extracted is not None else extracted)
+            if is_stock:
+                extracted_answers.append(extracted)
+            else:
+                extracted_answers.append(extracted.strip() if extracted is not None else extracted)
 
             correct_answers.append(resp['correct_answer'])
 
@@ -328,11 +522,23 @@ def _process_one_example(example_id: int, cfg: dict):
                 # 兼容 rule_equality* 中的打印（使用到全局 extracted_answer）
                 globals()['extracted_answer'] = ea
 
-                score = check_equality(dataset, question, ca, ea, exp_cfg)
+                if is_stock:
+                    score, metrics = _evaluate_stock_candidate(ca, ea, stock_executor)
+                    stock_metrics = metrics
+                else:
+                    score = check_equality(dataset, question, ca, ea, exp_cfg)
+
                 if score == 1:
-                    lines_to_write.append(
-                        f'experiemnt {example_id}: 1 ({responses[round_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
-                    )
+                    if is_stock:
+                        lines_to_write.append(
+                            f'experiemnt {example_id}: 1 ({responses[round_id]["n"]}); '
+                            f'direct_full={stock_metrics["direct_full"]}; code_full={stock_metrics["code_full"]}; '
+                            f'correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                        )
+                    else:
+                        lines_to_write.append(
+                            f'experiemnt {example_id}: 1 ({responses[round_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                        )
                     is_correct = True
                     break
 
@@ -348,16 +554,29 @@ def _process_one_example(example_id: int, cfg: dict):
                 )
             except Exception as e:
                 special_msgs.append(f'Error: {e}; skip')
+                if is_stock:
+                    return example_id, 0, special_msgs, lines_to_write, stock_metrics
                 return example_id, 0, special_msgs, lines_to_write
 
             ca = correct_answers[chosen_id]
             ea = extracted_answers[chosen_id]
             globals()['extracted_answer'] = ea
-            score = check_equality(dataset, question, ca, ea, exp_cfg)
+            if is_stock:
+                score, metrics = _evaluate_stock_candidate(ca, ea, stock_executor)
+                stock_metrics = metrics
+            else:
+                score = check_equality(dataset, question, ca, ea, exp_cfg)
             if score == 1:
-                lines_to_write.append(
-                    f'experiemnt {example_id}: 1 ({responses[chosen_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
-                )
+                if is_stock:
+                    lines_to_write.append(
+                        f'experiemnt {example_id}: 1 ({responses[chosen_id]["n"]}); '
+                        f'direct_full={stock_metrics["direct_full"]}; code_full={stock_metrics["code_full"]}; '
+                        f'correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                    )
+                else:
+                    lines_to_write.append(
+                        f'experiemnt {example_id}: 1 ({responses[chosen_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                    )
                 is_correct = True
 
         elif judge_method == 'self':
@@ -365,7 +584,23 @@ def _process_one_example(example_id: int, cfg: dict):
             log_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_{option}_sub_self_verifier_log'
             score_path = f'{root_dir}/{dataset}/{example_id}/{model}_{model}_{model}_0_{option}_score.json'
 
-            if skip_eval:
+            if pipeline_stage == 'select':
+                chosen_id = self_verifier_list_wise.run_self_verifier(
+                    post_process_path, log_path, score_path, responses, sampler, post_processer,
+                    extracted_answers, dataset, max_response_per_sample, majority_vote
+                )
+                if is_stock:
+                    return example_id, 0, special_msgs, lines_to_write, stock_metrics
+                return example_id, 0, special_msgs, lines_to_write
+            elif pipeline_stage == 'eval':
+                try:
+                    chosen_id = self_verifier_list_wise.load_selection(score_path)
+                except Exception as e:
+                    special_msgs.append(f'example_id {example_id} failed to load score: {e}')
+                    if is_stock:
+                        return example_id, 0, special_msgs, lines_to_write, stock_metrics
+                    return example_id, 0, special_msgs, lines_to_write
+            elif skip_eval:
                 chosen_id = self_verifier_list_wise.run_self_verifier(
                     post_process_path, log_path, score_path, responses, sampler, post_processer,
                     extracted_answers, dataset, max_response_per_sample, majority_vote=True
@@ -378,11 +613,22 @@ def _process_one_example(example_id: int, cfg: dict):
             ca = correct_answers[chosen_id]
             ea = extracted_answers[chosen_id]
             globals()['extracted_answer'] = ea
-            score = check_equality(dataset, question, ca, ea, exp_cfg)
+            if is_stock:
+                score, metrics = _evaluate_stock_candidate(ca, ea, stock_executor)
+                stock_metrics = metrics
+            else:
+                score = check_equality(dataset, question, ca, ea, exp_cfg)
             if score == 1:
-                lines_to_write.append(
-                    f'experiemnt {example_id}: 1 ({responses[chosen_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
-                )
+                if is_stock:
+                    lines_to_write.append(
+                        f'experiemnt {example_id}: 1 ({responses[chosen_id]["n"]}); '
+                        f'direct_full={stock_metrics["direct_full"]}; code_full={stock_metrics["code_full"]}; '
+                        f'correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                    )
+                else:
+                    lines_to_write.append(
+                        f'experiemnt {example_id}: 1 ({responses[chosen_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                    )
                 is_correct = True
 
         elif judge_method in ["cot", "cot-sc", "debate", "reflexion"]:
@@ -407,22 +653,37 @@ def _process_one_example(example_id: int, cfg: dict):
                     break
 
             globals()['extracted_answer'] = ea
-            score = check_equality(dataset, question, ca, ea, exp_cfg)
+            if is_stock:
+                score, metrics = _evaluate_stock_candidate(ca, ea, stock_executor)
+                stock_metrics = metrics
+            else:
+                score = check_equality(dataset, question, ca, ea, exp_cfg)
             if score == 1:
-                lines_to_write.append(
-                    f'experiemnt {example_id}: 1 ({responses[resp_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
-                )
+                if is_stock:
+                    lines_to_write.append(
+                        f'experiemnt {example_id}: 1 ({responses[resp_id]["n"]}); '
+                        f'direct_full={stock_metrics["direct_full"]}; code_full={stock_metrics["code_full"]}; '
+                        f'correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                    )
+                else:
+                    lines_to_write.append(
+                        f'experiemnt {example_id}: 1 ({responses[resp_id]["n"]}); correct_answer: {ca} vs. extracted_answer: {ea}\n'
+                    )
                 is_correct = True
 
         if not is_correct:
             special_msgs.append(f'Cannot Find Correct Answer acorss reponses for example_id: {example_id}')
 
+        if is_stock:
+            return example_id, int(is_correct), special_msgs, lines_to_write, stock_metrics
         return example_id, int(is_correct), special_msgs, lines_to_write
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         special_msgs.append(f'example_id {example_id} crashed: {repr(e)}')
+        if is_stock:
+            return example_id, 0, special_msgs, lines_to_write, stock_metrics
         return example_id, 0, special_msgs, lines_to_write
 
 
@@ -440,6 +701,7 @@ parser.add_argument("--option", type=str, default="plan")
 parser.add_argument('--num_workers', type=int, default=max(1, (os.cpu_count() or 2) // 2))
 parser.add_argument("--orig_verifier_model", type=str, default="gpt-4o_chatgpt")
 parser.add_argument("--skip_eval", default=False, action="store_true")
+parser.add_argument("--pipeline_stage", type=str, default="end_to_end")
 args = parser.parse_args()
 
 if __name__ == "__main__":
@@ -454,6 +716,7 @@ if __name__ == "__main__":
 
     special_ids = []
     root_dir = f'{args.save_dir}/question/meta_agent/{args.baseline}'
+    is_stock = is_stock_dataset(dataset)
 
     # all results
     if judge_method == 'external':
@@ -473,6 +736,7 @@ if __name__ == "__main__":
 
     correct_example = []
     special_ids = []
+    stock_metrics_list = []
 
     if 'gpqa' in dataset:
         assert min_sample == 32
@@ -491,7 +755,8 @@ if __name__ == "__main__":
         'option': args.option,
         'prm_model_path': "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-7B" if judge_method == 'external' else None,
         'orig_verifier_model': args.orig_verifier_model,
-        'skip_eval': args.skip_eval
+        'skip_eval': args.skip_eval,
+        'pipeline_stage': args.pipeline_stage
     }
 
     lines_buffer = []
@@ -500,7 +765,11 @@ if __name__ == "__main__":
     with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
         futures = {executor.submit(_process_one_example, eid, cfg): eid for eid in example_ids}
         for fut in as_completed(futures):
-            eid, is_correct, specials, lines = fut.result()
+            if is_stock:
+                eid, is_correct, specials, lines, stock_metrics = fut.result()
+                stock_metrics_list.append(stock_metrics)
+            else:
+                eid, is_correct, specials, lines = fut.result()
             if specials:
                 special_ids.extend(specials)
             if lines:
@@ -520,8 +789,44 @@ if __name__ == "__main__":
             for line in lines_buffer:
                 fh.write(line)
 
-    acc = (sum(correct_example) / len(correct_example)) if correct_example else 0.0
-    print(f'correct {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}')
+    if is_stock and stock_metrics_list:
+        total = len(stock_metrics_list)
+        direct_full = sum(m["direct_full"] for m in stock_metrics_list)
+        direct_partial = sum(m["direct_partial"] for m in stock_metrics_list)
+        code_full = sum(m["code_full"] for m in stock_metrics_list)
+        code_partial = sum(m["code_partial"] for m in stock_metrics_list)
+        code_failed = sum(m["code_failed"] for m in stock_metrics_list)
 
-    with open(result_path, "a+") as fh:
-        fh.write(f'correct {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}\n')
+        print("\n" + "=" * 60)
+        print("STOCK DATASET EVALUATION")
+        print("=" * 60)
+        print(f"Total samples evaluated: {total}")
+        print("\nDirect Answer Metrics:")
+        print(f"  Full Match:    {direct_full}/{total} ({direct_full/total:.2%})")
+        print(f"  Partial Match: {direct_partial}/{total} ({direct_partial/total:.2%})")
+        print("\nCode Output Metrics:")
+        print(f"  Full Match:    {code_full}/{total} ({code_full/total:.2%})")
+        print(f"  Partial Match: {code_partial}/{total} ({code_partial/total:.2%})")
+        print(f"  Execution Failures:      {code_failed}/{total} ({code_failed/total:.2%})")
+        print("=" * 60)
+
+        with open(result_path, "a+") as fh:
+            fh.write("\n" + "=" * 60 + "\n")
+            fh.write("STOCK DATASET EVALUATION\n")
+            fh.write("=" * 60 + "\n")
+            fh.write(f"Total samples evaluated: {total}\n\n")
+            fh.write("Direct Answer Metrics:\n")
+            fh.write(f"  Full Match:    {direct_full}/{total} ({direct_full/total:.2%})\n")
+            fh.write(f"  Partial Match: {direct_partial}/{total} ({direct_partial/total:.2%})\n\n")
+            fh.write("Code Output Metrics:\n")
+            fh.write(f"  Full Match:    {code_full}/{total} ({code_full/total:.2%})\n")
+            fh.write(f"  Partial Match: {code_partial}/{total} ({code_partial/total:.2%})\n")
+            fh.write(f"  Execution Failures:      {code_failed}/{total} ({code_failed/total:.2%})\n")
+            fh.write("=" * 60 + "\n")
+
+    if not (args.pipeline_stage == "select" and judge_method == "self"):
+        acc = (sum(correct_example) / len(correct_example)) if correct_example else 0.0
+        print(f'correct {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}')
+
+        with open(result_path, "a+") as fh:
+            fh.write(f'correct {sum(correct_example)}; Total: {len(correct_example)}; Acc: {acc}\n')

@@ -1,4 +1,5 @@
 import copy
+import ast
 import functools
 import inspect
 import json
@@ -35,6 +36,54 @@ def is_swe_dataset(dataset_name: str) -> bool:
         return False
     swe_tokens = ('swe_bench', 'workflow_search/swe', 'swe_test')
     return any(token in dataset_name for token in swe_tokens)
+
+
+def is_stock_dataset(dataset_name: str) -> bool:
+    if not dataset_name:
+        return False
+    return "stocks_synthetic" in dataset_name.lower()
+
+
+def _extract_stock_answer_for_memory(response_text: str) -> str:
+    if not response_text:
+        return ""
+    answer_blob = response_text
+    if "\n\nAnswer:" in response_text:
+        answer_blob = response_text.split("\n\nAnswer:", 1)[-1].strip()
+    else:
+        match = re.search(r"(?i)Answer\s*:\s*(.*)", response_text, re.DOTALL)
+        if match:
+            answer_blob = match.group(1).strip()
+
+    parsed = None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(answer_blob)
+            break
+        except Exception:
+            continue
+
+    if not isinstance(parsed, dict):
+        start = answer_blob.find("{")
+        end = answer_blob.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            snippet = answer_blob[start:end + 1]
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    parsed = parser(snippet)
+                    break
+                except Exception:
+                    continue
+
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("output"), dict):
+            parsed = parsed["output"]
+        value = parsed.get("answer", parsed.get("final_answer", parsed))
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return "" if value is None else str(value)
+
+    return answer_blob.strip()
 
 
 json_next_step_prompt = """{prev_info}Given the above, answer the following question: {instruction}
@@ -512,6 +561,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
             extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
+        elif is_stock_dataset(dataset):
+            extracted_answer = _extract_stock_answer_for_memory(final_response[0])
         else:
             extracted_answer = re.search(ANSWER_PATTERN, final_response[0])
             if extracted_answer is not None:
@@ -712,6 +763,8 @@ async def search(extra_info, task_queue, meta_model, blocks, verifier_model, n_g
             extracted_answer = final_response[0].split('\n\nAnswer:', 1)[-1].strip()
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
+        elif is_stock_dataset(dataset):
+            extracted_answer = _extract_stock_answer_for_memory(final_response[0])
         else:
             # extracted_answer = re.search(ANSWER_PATTERN, final_response[0]).group(1)
             extracted_answer = re.search(ANSWER_PATTERN, final_response[0])

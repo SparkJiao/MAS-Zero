@@ -6,6 +6,10 @@ import common
 import json
 from common import HTML_JINJA, SingleEvalResult
 import re
+import ast
+import os
+import sys
+from pathlib import Path
 
 
 class DataScorer:
@@ -20,11 +24,163 @@ class DataScorer:
     def _is_swe_dataset(self):
         return any(tag in self.dataset for tag in ('swe_bench', 'workflow_search/swe', 'swe_test'))
 
+    def _is_stock_dataset(self):
+        return self.dataset and "stocks_synthetic" in self.dataset.lower()
+
+    def _load_stock_executor(self):
+        eval_dir = Path(__file__).resolve().parent / "stocks_synthetic_dataset" / "evaluate"
+        if eval_dir.exists():
+            sys.path.append(str(eval_dir))
+        try:
+            from safe_code_executor import SafeCodeExecutor  # type: ignore
+        except Exception:
+            return None
+        return SafeCodeExecutor(timeout=30)
+
+    def _extract_stock_answer_blob(self, response_text: str) -> str:
+        if not response_text:
+            return ""
+        lowered = response_text.lower()
+        idx = lowered.rfind("answer:")
+        if idx == -1:
+            return response_text.strip()
+        return response_text[idx + len("answer:"):].strip()
+
+    def _try_parse_mapping(self, text: str):
+        if not text:
+            return None
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(text)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    def _parse_stock_model_output(self, response_text: str) -> dict:
+        answer_blob = self._extract_stock_answer_blob(response_text)
+        parsed = self._try_parse_mapping(answer_blob)
+        if parsed is None:
+            start = answer_blob.find("{")
+            end = answer_blob.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                parsed = self._try_parse_mapping(answer_blob[start:end + 1])
+
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("output"), dict):
+                output_block = parsed["output"]
+                return {
+                    "answer": output_block.get("answer"),
+                    "code": output_block.get("code"),
+                    "raw_answer": answer_blob,
+                }
+            return {
+                "answer": parsed.get("answer", parsed.get("final_answer")),
+                "code": parsed.get("code"),
+                "raw_answer": answer_blob,
+            }
+
+        code = None
+        code_match = re.search(r"```(?:python)?\n(.*?)```", answer_blob, re.DOTALL | re.IGNORECASE)
+        if code_match:
+            code = code_match.group(1).strip()
+            answer_blob = (answer_blob[:code_match.start()] + answer_blob[code_match.end():]).strip()
+
+        if code is None:
+            code_marker = re.search(r"(?is)\bcode\s*:\s*", answer_blob)
+            if code_marker:
+                code = answer_blob[code_marker.end():].strip()
+                answer_blob = answer_blob[:code_marker.start()].strip()
+
+        return {
+            "answer": None,
+            "code": code,
+            "raw_answer": answer_blob,
+        }
+
+    def _extract_reference_answer(self, reference):
+        if isinstance(reference, dict):
+            ref = reference.get("answer", [])
+            if isinstance(ref, dict):
+                ref = ref.get("answer", [])
+            return ref or []
+        return reference or []
+
+    def _evaluate_direct_answer(self, model_answer, reference_answer):
+        if not reference_answer:
+            return False
+
+        partial_count = 0
+        for name in reference_answer:
+            if isinstance(model_answer, list):
+                if name in model_answer:
+                    partial_count += 1
+            else:
+                if name in str(model_answer):
+                    partial_count += 1
+
+        return partial_count == len(reference_answer)
+
+    def _evaluate_code_output(self, code, reference_answer, executor):
+        if not code or executor is None:
+            return False
+
+        old_stdout = sys.stdout
+        sys.stdout = open(os.devnull, "w")
+        try:
+            exec_result = executor.execute(code, inputs={})
+        finally:
+            sys.stdout.close()
+            sys.stdout = old_stdout
+
+        if not exec_result.get("success", False):
+            return False
+
+        result = exec_result.get("result")
+        if isinstance(result, dict):
+            code_answer = result.get("answer")
+        else:
+            code_answer = result
+
+        if code_answer is None:
+            return False
+
+        if isinstance(code_answer, str):
+            if code_answer in reference_answer:
+                return len(reference_answer) == 1
+            return False
+
+        if isinstance(code_answer, list):
+            return set(code_answer) == set(reference_answer)
+
+        return False
+
+    def _evaluate_stock_candidate(self, correct_answer, candidate):
+        reference_answer = self._extract_reference_answer(correct_answer)
+
+        model_answer = candidate.get("answer")
+        if isinstance(model_answer, dict) and "answer" in model_answer:
+            model_answer = model_answer["answer"]
+        if model_answer is None:
+            model_answer = candidate.get("raw_answer", "")
+
+        direct_full = self._evaluate_direct_answer(model_answer, reference_answer)
+        executor = self._load_stock_executor()
+        code_full = self._evaluate_code_output(candidate.get("code"), reference_answer, executor)
+
+        return direct_full or code_full
+
     async def run_score(self, answer, extracted_answer, use_oracle_verifier, judge_path, instance_id, n, code_snippet):
 
         if self._is_swe_dataset():
             print("SWE verification placeholder: returning 0.0 (requires offline evaluation).")
             return 0.0
+        elif self._is_stock_dataset():
+            try:
+                return float(self._evaluate_stock_candidate(answer, extracted_answer))
+            except Exception:
+                return 0.0
         elif 'aime24' in self.dataset or 'hle_math' in self.dataset:
             res = await async_check_equality(self.equality_checker, answer, extracted_answer, use_oracle_verifier=True, judge_path=judge_path)
             return float(res)
@@ -128,6 +284,8 @@ class DataScorer:
             extracted_answer = response_text.split('\n\nAnswer:', 1)[-1].strip()
             if '<patch>' in extracted_answer:
                 extracted_answer = extract_xml(extracted_answer, 'patch').strip()
+        elif self._is_stock_dataset():
+            extracted_answer = self._parse_stock_model_output(response_text)
         else:
             try:
                 match = re.search(ANSWER_PATTERN, response_text)
