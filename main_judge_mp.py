@@ -28,7 +28,8 @@ except Exception:
 def is_stock_dataset(dataset_name: str) -> bool:
     if not dataset_name:
         return False
-    return "stocks_synthetic" in dataset_name.lower()
+    name = dataset_name.lower().strip()
+    return name == "workflow_search/stock" or "stocks_synthetic" in name or "stock" in name
 
 
 _STOCK_EVAL_DIR = Path(__file__).resolve().parent / "stocks_synthetic_dataset" / "evaluate"
@@ -259,6 +260,19 @@ def rule_equality_folio(correct, candidate):
 
 
 def check_equality(dataset, question, correct, candidate, cfg):
+    if is_stock_dataset(dataset):
+        if isinstance(candidate, dict):
+            parsed_candidate = candidate
+        else:
+            parsed_candidate = _parse_stock_model_output(candidate)
+
+        stock_executor = cfg.get("_stock_executor")
+        if stock_executor is None and SafeCodeExecutor:
+            stock_executor = SafeCodeExecutor(timeout=30)
+
+        score, _ = _evaluate_stock_candidate(correct, parsed_candidate, stock_executor)
+        return float(score)
+
     FORMAT_INST = lambda \
             request_keys: f"""Reply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a well-formed JSON object!\n\n"""
 
@@ -397,10 +411,10 @@ model_sampler_map = {
         model="o3-mini",
     ),
     "gpt-4o_chatgpt": ChatCompletionSampler(
-        model="gpt-4o", max_tokens=8192
+        model="gpt-4o", max_tokens=16384
     ),
     "gpt-5-nano": ChatCompletionSampler(model="gpt-5-nano-2025-08-07", temperature=1.0),
-    "gpt-5": ChatCompletionSampler(model="gpt-5-2025-08-07", temperature=1.0, max_tokens=32768),
+    "gpt-5": ChatCompletionSampler(model="gpt-5-2025-08-07", temperature=1.0, max_tokens=128000),
     "qwen-2.5-32b-instr": VllmChatCompletionSampler(
         model="qwen-2.5-32b-instr",
     ),
@@ -420,7 +434,7 @@ model_sampler_map = {
     "qwen3-30b-a3b-reasoning": VllmChatCompletionSampler(model="qwen3-30b-a3b-reasoning", response_format="xml", max_tokens=65536),
     "gpt-oss-120b": VllmChatCompletionSampler(model="gpt-oss-120b", response_format="json", max_tokens=131072),
     # "gpt-oss-120b": ChatCompletionSampler(model="gpt-oss-120b", max_tokens=131072, response_format="json"),
-    "gemini-2.5-pro": ChatCompletionSampler(model="gemini-2.5-pro", max_tokens=32768)
+    "gemini-2.5-pro": ChatCompletionSampler(model="gemini-2.5-pro", max_tokens=131072)
 }
 
 

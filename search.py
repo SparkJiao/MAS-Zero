@@ -42,7 +42,8 @@ SEARCHING_MODE = True
 def is_stock_dataset(dataset_name: str) -> bool:
     if not dataset_name:
         return False
-    return "stocks_synthetic" in dataset_name.lower()
+    name = dataset_name.lower().strip()
+    return name == "workflow_search/stock" or "stocks_synthetic" in name
 
 
 def _extract_stock_answer_for_memory(response_text: str) -> str:

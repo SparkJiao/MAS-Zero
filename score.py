@@ -25,7 +25,10 @@ class DataScorer:
         return any(tag in self.dataset for tag in ('swe_bench', 'workflow_search/swe', 'swe_test'))
 
     def _is_stock_dataset(self):
-        return self.dataset and "stocks_synthetic" in self.dataset.lower()
+        if not self.dataset:
+            return False
+        name = self.dataset.lower().strip()
+        return name == "workflow_search/stock" or "stocks_synthetic" in name
 
     def _load_stock_executor(self):
         eval_dir = Path(__file__).resolve().parent / "stocks_synthetic_dataset" / "evaluate"

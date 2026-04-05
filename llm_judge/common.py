@@ -12,7 +12,7 @@ def filter_and_sort(a, b, dataset):  # aime24
         filtered = [(ai, bi) for ai, bi in zip(a, b) if isinstance(ai, str) and ai.isdigit()]
     elif 'gpqa' in dataset:
         filtered = [(ai, bi) for ai, bi in zip(a, b) if isinstance(ai, str) and ai in ['A', 'B', 'C', 'D']]
-    elif 'swe' in dataset or 'browsecomp':
+    elif 'swe' in dataset or 'browsecomp' in dataset or 'stock' in dataset:
         filtered = [(ai, bi) for ai, bi in zip(a, b) if isinstance(ai, str)]
     else:
         raise NotImplementedError

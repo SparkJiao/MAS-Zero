@@ -1,7 +1,5 @@
 import inspect
 
-from git.util import finalize_process
-
 from async_search import LLMAgentBase
 
 

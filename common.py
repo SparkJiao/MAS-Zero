@@ -315,7 +315,31 @@ async def get_json_response_from_gpt_local(
     # sampler = model_sampler_map[model]
     sampler = get_model(model)
 
+    def _fallback_output(reason: str, bad_response_text: str = ""):
+        # Keep a strict key set so caller-side unpacking stays stable.
+        json_dict = {key: "" for key in output_fields}
+        reason_text = f"[INTERMEDIATE_RESPONSE_ERROR] {reason}".strip()
+        raw_text = str(bad_response_text).strip()
+        if raw_text:
+            # Bound payload size to avoid blowing up logs/context.
+            raw_text = raw_text[:2000]
+            err_payload = f"{reason_text}\nRaw response: {raw_text}"
+        else:
+            err_payload = reason_text
+
+        if "answer" in json_dict:
+            # User requested: when intermediate response fails, put error in answer.
+            json_dict["answer"] = err_payload
+        if "thinking" in json_dict and not json_dict["thinking"]:
+            json_dict["thinking"] = reason_text
+        if "feedback" in json_dict and not json_dict["feedback"]:
+            json_dict["feedback"] = reason_text
+        if "correct" in json_dict and not json_dict["correct"]:
+            json_dict["correct"] = "False"
+        return json_dict
+
     debug_count = 0
+    last_bad_response_text = ""
     while True:
         debug_count += 1
         response_text = ""
@@ -323,10 +347,11 @@ async def get_json_response_from_gpt_local(
             sampler_return = await sampler(msg, temperature)
 
             # # TODO: we do not want to break here. If it is just excution, it must be runnable by keep retrying
-            if sampler_return == "" or debug_count > 2:  # bad request
-                json_dict = {key: "" for key in output_fields}
-                json_dict["error"] = "bad request. Please try again with higher temperature."
-                return json_dict
+            if sampler_return == "":  # bad request
+                last_bad_response_text = ""
+                if debug_count > 2:
+                    return _fallback_output("empty sampler response", last_bad_response_text)
+                continue
 
             response_text, usage = sampler_return
             try:
@@ -352,9 +377,18 @@ async def get_json_response_from_gpt_local(
                 break
             else:
                 print(f'require output_fields: {output_fields}, json_dict: {keys}; is_valid_answer: {is_valid_answer}')
+                last_bad_response_text = response_text
+                if debug_count > 2:
+                    return _fallback_output("invalid response schema", last_bad_response_text)
 
         except Exception as e:
             print(f'Execute Error: {e}; response_text: {response_text}')
+            last_bad_response_text = response_text
+            # Sampler already exhausted retries; do not re-enter long retry loops.
+            if "failed after" in str(e).lower():
+                return _fallback_output(str(e), last_bad_response_text)
+            if debug_count > 2:
+                return _fallback_output(str(e), last_bad_response_text)
 
     # print('json_dict: ',json_dict)
     if isinstance(usage, dict):

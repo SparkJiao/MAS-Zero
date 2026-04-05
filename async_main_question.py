@@ -2,7 +2,6 @@ import argparse
 import asyncio
 import copy
 import json
-import re
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +13,9 @@ from prompts.swe.patch_oracle import AGENTLESS_REPAIR
 from sampler import init_model
 from utils import extract_xml
 from utils import load_questions
+
+STOCK_DATASET_NAME = "workflow_search/stock"
+STOCK_MERGED_DATASET_FILE = "balanced_dataset_merged_depth.jsonl"
 
 
 def determine_format(model_name):
@@ -91,38 +93,12 @@ def parse_arguments():
 def is_stock_dataset(dataset_name: str) -> bool:
     if not dataset_name:
         return False
-    dataset_name = dataset_name.lower()
-    return "stocks_synthetic" in dataset_name
+    name = dataset_name.lower().strip()
+    return name == STOCK_DATASET_NAME or "stocks_synthetic" in name
 
 
-def resolve_stock_dataset_path(dataset_name: str) -> Path:
-    dataset_root = Path(__file__).resolve().parent / "stocks_synthetic_dataset"
-    if ".jsonl" in dataset_name:
-        candidate = Path(dataset_name)
-        if not candidate.is_absolute():
-            candidate = Path(__file__).resolve().parent / dataset_name
-        if candidate.exists():
-            return candidate
-        candidate = dataset_root / Path(dataset_name).name
-        if candidate.exists():
-            return candidate
-
-    match = re.search(r"single[_-]?(\d+)", dataset_name)
-    if match:
-        suffix = match.group(1)
-    else:
-        digit = re.search(r"(\d+)", dataset_name)
-        suffix = digit.group(1) if digit else "2"
-
-    candidate = dataset_root / f"balanced_dataset_single_{suffix}.jsonl"
-    if candidate.exists():
-        return candidate
-
-    return dataset_root / "balanced_dataset_single_2.jsonl"
-
-
-def load_stock_examples(dataset_name: str):
-    dataset_path = resolve_stock_dataset_path(dataset_name)
+def load_stock_examples():
+    dataset_path = Path(__file__).resolve().parent / "stocks_synthetic_dataset" / STOCK_MERGED_DATASET_FILE
     if not dataset_path.exists():
         raise FileNotFoundError(f"Stock data file not found at {dataset_path}")
 
@@ -136,9 +112,9 @@ def load_stock_examples(dataset_name: str):
             examples.append({
                 "problem": data["problem"],
                 "answer": data["answer"],
+                "depth": data.get("depth"),
                 "instance_id": data.get("id", idx),
             })
-
     return examples, dataset_path
 
 
@@ -605,7 +581,7 @@ async def main(args):
         elif is_stock_dataset(args.dataset):
             cot_instruction = "Please think step by step and then solve the task."
             output_description = (
-                "Return ONLY a single-line JSON **string** with keys: "
+                "Contain single-line JSON **string** with keys: "
                 "\"answer\" and \"code\". "
                 "\"answer\" must be the final winner name (string), a list of names for ties, or null. "
                 "\"code\" must be a JSON string with escaped newlines (use \\\\n, no markdown fences). "
@@ -615,7 +591,7 @@ async def main(args):
             )
             debate_role = ["Financial Analyst", "Quant Researcher", "Risk Manager"]
 
-            examples, dataset_path = load_stock_examples(args.dataset)
+            examples, dataset_path = load_stock_examples()
             print(f"Loaded stock dataset from {dataset_path} with {len(examples)} examples")
 
             extra_info["node_model"] = node_model
