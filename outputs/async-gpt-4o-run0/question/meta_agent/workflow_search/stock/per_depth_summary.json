@@ -1,0 +1,192 @@
+[
+  {
+    "file": "outputs/async-gpt-4o-run0/question/meta_agent/workflow_search/stock/gpt-4o_chatgpt_gpt-4o_chatgpt_cot-sc.results_9",
+    "method": "cot-sc",
+    "overall_summary": {
+      "correct": 174,
+      "total": 604,
+      "acc": 0.28807947019867547
+    },
+    "parsed_correct": 174,
+    "unknown_example_ids": [],
+    "per_depth": {
+      "2": {
+        "correct": 55,
+        "total": 104,
+        "acc": 0.5288461538461539
+      },
+      "3": {
+        "correct": 27,
+        "total": 104,
+        "acc": 0.25961538461538464
+      },
+      "4": {
+        "correct": 22,
+        "total": 104,
+        "acc": 0.21153846153846154
+      },
+      "5": {
+        "correct": 42,
+        "total": 152,
+        "acc": 0.27631578947368424
+      },
+      "6": {
+        "correct": 28,
+        "total": 140,
+        "acc": 0.2
+      }
+    }
+  },
+  {
+    "file": "outputs/async-gpt-4o-run0/question/meta_agent/workflow_search/stock/gpt-4o_chatgpt_gpt-4o_chatgpt_cot.results_9",
+    "method": "cot",
+    "overall_summary": {
+      "correct": 153,
+      "total": 604,
+      "acc": 0.2533112582781457
+    },
+    "parsed_correct": 153,
+    "unknown_example_ids": [],
+    "per_depth": {
+      "2": {
+        "correct": 70,
+        "total": 104,
+        "acc": 0.6730769230769231
+      },
+      "3": {
+        "correct": 31,
+        "total": 104,
+        "acc": 0.2980769230769231
+      },
+      "4": {
+        "correct": 16,
+        "total": 104,
+        "acc": 0.15384615384615385
+      },
+      "5": {
+        "correct": 16,
+        "total": 152,
+        "acc": 0.10526315789473684
+      },
+      "6": {
+        "correct": 20,
+        "total": 140,
+        "acc": 0.14285714285714285
+      }
+    }
+  },
+  {
+    "file": "outputs/async-gpt-4o-run0/question/meta_agent/workflow_search/stock/gpt-4o_chatgpt_gpt-4o_chatgpt_debate.results_9",
+    "method": "debate",
+    "overall_summary": {
+      "correct": 181,
+      "total": 604,
+      "acc": 0.2996688741721854
+    },
+    "parsed_correct": 181,
+    "unknown_example_ids": [],
+    "per_depth": {
+      "2": {
+        "correct": 66,
+        "total": 104,
+        "acc": 0.6346153846153846
+      },
+      "3": {
+        "correct": 36,
+        "total": 104,
+        "acc": 0.34615384615384615
+      },
+      "4": {
+        "correct": 18,
+        "total": 104,
+        "acc": 0.17307692307692307
+      },
+      "5": {
+        "correct": 27,
+        "total": 152,
+        "acc": 0.17763157894736842
+      },
+      "6": {
+        "correct": 34,
+        "total": 140,
+        "acc": 0.24285714285714285
+      }
+    }
+  },
+  {
+    "file": "outputs/async-gpt-4o-run0/question/meta_agent/workflow_search/stock/gpt-4o_chatgpt_gpt-4o_chatgpt_reflexion.results_9",
+    "method": "reflexion",
+    "overall_summary": {
+      "correct": 165,
+      "total": 604,
+      "acc": 0.2731788079470199
+    },
+    "parsed_correct": 165,
+    "unknown_example_ids": [],
+    "per_depth": {
+      "2": {
+        "correct": 71,
+        "total": 104,
+        "acc": 0.6826923076923077
+      },
+      "3": {
+        "correct": 31,
+        "total": 104,
+        "acc": 0.2980769230769231
+      },
+      "4": {
+        "correct": 23,
+        "total": 104,
+        "acc": 0.22115384615384615
+      },
+      "5": {
+        "correct": 18,
+        "total": 152,
+        "acc": 0.11842105263157894
+      },
+      "6": {
+        "correct": 22,
+        "total": 140,
+        "acc": 0.15714285714285714
+      }
+    }
+  },
+  {
+    "file": "outputs/async-gpt-4o-run0/question/meta_agent/workflow_search/stock/gpt-4o_chatgpt_gpt-4o_chatgpt_self.results_9",
+    "method": "self",
+    "overall_summary": {
+      "correct": 176,
+      "total": 604,
+      "acc": 0.2913907284768212
+    },
+    "parsed_correct": 176,
+    "unknown_example_ids": [],
+    "per_depth": {
+      "2": {
+        "correct": 52,
+        "total": 104,
+        "acc": 0.5
+      },
+      "3": {
+        "correct": 27,
+        "total": 104,
+        "acc": 0.25961538461538464
+      },
+      "4": {
+        "correct": 24,
+        "total": 104,
+        "acc": 0.23076923076923078
+      },
+      "5": {
+        "correct": 37,
+        "total": 152,
+        "acc": 0.24342105263157895
+      },
+      "6": {
+        "correct": 36,
+        "total": 140,
+        "acc": 0.2571428571428571
+      }
+    }
+  }
+]
